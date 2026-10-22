@@ -1,0 +1,11 @@
+{
+	"name": "task",
+	"version": "0.1.0",
+	"description": "Task files in each project's docs (md/projects/<name>/tasks) and search for similar past tasks",
+	"runtime": "node",
+	"entry": "src/index.ts",
+	"dependencies": {
+		"md": "git@github.com:hyenayena/md.git",
+		"project": "git@github.com:hyenayena/project.git"
+	}
+}
