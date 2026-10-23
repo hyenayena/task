@@ -5,7 +5,6 @@
 	"runtime": "node",
 	"entry": "src/index.ts",
 	"dependencies": {
-		"md": "git@github.com:hyenayena/md.git",
 		"project": "git@github.com:hyenayena/project.git"
 	}
 }

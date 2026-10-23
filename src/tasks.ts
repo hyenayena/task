@@ -1,10 +1,10 @@
 import {closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync, constants} from 'node:fs';
 import path from 'node:path';
+import {isProjectName} from './deps/project.js';
 
 export const TASKS_DIR = 'tasks';
 export const AUTO_PREFIX = 'TASK';
 
-const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // The id ends at the first underscore, so ids have none.
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/;
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -15,7 +15,7 @@ const READ_MAX = 256 * 1024;
 
 export type Task = {project: string; id: string; name: string; file: string};
 
-export const isProject = (v: unknown): v is string => typeof v === 'string' && PROJECT_RE.test(v) && v !== '.' && v !== '..';
+export const isProject = isProjectName;
 
 export function checkProject(v: string | undefined): string {
 	if (!isProject(v)) throw new Error('Invalid project name');

@@ -5,21 +5,19 @@ import path from 'node:path';
 import {after, describe, it} from 'node:test';
 import type {CommandContext, Logger} from '../../../src/api.js';
 import {createTaskCommand} from '../src/commands.js';
-import plugin, {pathsFor} from '../src/index.js';
-import {isolatedProjects} from '../src/isolation.js';
+import plugin, {depsFor} from '../src/index.js';
 import {rank, summaryOf, words} from '../src/search.js';
 import {checkName, listTasks, nextAutoId, parseFileName, type Task, template} from '../src/tasks.js';
 
 const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'task-')));
 after(() => rmSync(tmp, {recursive: true, force: true}));
 const md = path.join(tmp, 'md', 'projects');
-const projectState = path.join(tmp, 'project', 'state.json');
-mkdirSync(path.dirname(projectState), {recursive: true});
-const isolate = (...names: string[]) =>
-	writeFileSync(projectState, JSON.stringify({v: 1, workplace: '/w', stage: '/s', md, session: names.length ? {id: 'ab12cd34', isolated: names, stages: []} : null}));
+// What the project module reports as isolated; its state format is its own business.
+let isolatedNow: string[] = [];
+const isolate = (...names: string[]) => void (isolatedNow = names);
 
 const noopLog: Logger = {error() {}, warn() {}, info() {}, debug() {}, child: () => noopLog, addRedactor() {}};
-const command = createTaskCommand({md, projectState, log: noopLog, now: () => new Date('2026-10-23T12:00:00Z')});
+const command = createTaskCommand({md, isolated: () => isolatedNow, log: noopLog, now: () => new Date('2026-10-23T12:00:00Z')});
 const run = async (...args: string[]): Promise<string> => {
 	const printed: string[] = [];
 	const ctx: CommandContext = {print: t => void printed.push(t), clear() {}, exit() {}};
@@ -81,7 +79,6 @@ describe('task command', () => {
 	it('creates tasks only in isolated projects', async () => {
 		isolate();
 		await assert.rejects(run('new', 'web', 'add-login'), /web is not isolated; run "project isolate web" first/);
-		assert.deepEqual(isolatedProjects(path.join(tmp, 'missing.json')), []);
 		isolate('web');
 		const auto = await run('new', 'web', 'add-login');
 		assert.equal(auto, path.join(md, 'web', 'tasks', 'TASK-1_add-login.md'));
@@ -124,7 +121,8 @@ describe('task command', () => {
 	it('help, unknown subcommands and the plugin', async () => {
 		assert.match(await run(), /^Usage: task list/);
 		await assert.rejects(run('nope'), /Unknown subcommand: nope/);
-		assert.deepEqual(pathsFor('/data/task'), {md: '/data/md/projects', projectState: '/data/project/state.json'});
+		assert.equal(depsFor('/data/task').md, '/data/md/projects');
+		assert.deepEqual(depsFor(path.join(tmp, 'nowhere', 'task')).isolated(), [], 'no project state: nothing isolated');
 		const commands = await plugin({dataDir: path.join(tmp, 'task'), log: noopLog, events: {emit() {}, on: () => () => {}}});
 		assert.deepEqual(commands.map(c => c.name), ['task']);
 		assert.ok(!existsSync(path.join(tmp, 'task')), 'loading writes nothing');

@@ -1,7 +1,6 @@
 import {mkdirSync} from 'node:fs';
 import path from 'node:path';
 import type {Command, Logger} from '../../../src/api.js';
-import {isolatedProjects} from './isolation.js';
 import {noopLog} from './log.js';
 import {rank} from './search.js';
 import {checkId, checkName, checkProject, createTaskFile, listTasks, nextAutoId, readTask, type Task, tasksDir, template, titleOf} from './tasks.js';
@@ -9,8 +8,8 @@ import {checkId, checkName, checkProject, createTaskFile, listTasks, nextAutoId,
 export type TaskDeps = {
 	/** The hub's projects dir, <YENA_DATA>/md/projects. */
 	md: string;
-	/** The project module's state file, <YENA_DATA>/project/state.json. */
-	projectState: string;
+	/** The isolated projects of the work session (the project module's). */
+	isolated: () => string[];
 	log?: Logger;
 	now?: () => Date;
 };
@@ -42,7 +41,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	};
 
 	const create = (project: string, name: string, rawId: string | undefined): string => {
-		if (!isolatedProjects(deps.projectState).includes(project)) {
+		if (!deps.isolated().includes(project)) {
 			throw new Error(`${project} is not isolated; run "project isolate ${project}" first`);
 		}
 		const existing = listTasks(deps.md, project);

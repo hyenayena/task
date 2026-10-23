@@ -1,6 +1,6 @@
 # task
 
-Task files for yena's projects, as a plugin (depends on `md` and `project`). Some tasks are routine and come back; before a new task the architect looks for similar past tasks and reuses their approaches and pitfalls. After the work the documentator records the outcome in the task file, which is what the next search finds.
+Task files for yena's projects, as a plugin (depends on `project` only; the docs folders in the md hub belong to project, which tells where they are). Some tasks are routine and come back; before a new task the architect looks for similar past tasks and reuses their approaches and pitfalls. After the work the documentator records the outcome in the task file, which is what the next search finds.
 
 Task files live in each project's docs in the md hub:
 
@@ -42,7 +42,7 @@ Request, Similar tasks and Plan are written by the architect; the Outcome sectio
 
 ## Layout
 
-`src/`: `index.ts` (plugin; paths of the hub and the project state from its data dir), `commands.ts`, `tasks.ts` (names, listing, numbering, template, exclusive create, bounded reads), `search.ts` (ranking), `isolation.ts` (minimal reader of the project module's state). Tests: `npm test`.
+`src/`: `index.ts` (plugin; the docs root and the isolation check come from the project module), `deps/project.ts` (the only import of another module: project's `docsRootFor`, `isolatedProjects`, `isProjectName`), `commands.ts`, `tasks.ts` (names, listing, numbering, template, exclusive create, bounded reads), `search.ts` (ranking). Tests: `npm test`.
 
 ## Residual risks
 
