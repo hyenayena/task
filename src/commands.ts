@@ -3,7 +3,24 @@ import path from 'node:path';
 import type {Command, Logger} from '../../../src/api.js';
 import {noopLog} from './log.js';
 import {rank} from './search.js';
-import {checkId, checkName, checkProject, createTaskFile, listTasks, nextAutoId, readTask, type Task, tasksDir, template, titleOf} from './tasks.js';
+import {
+	checkId,
+	checkName,
+	checkProject,
+	checkStatus,
+	createTaskFile,
+	listTasks,
+	nextAutoId,
+	readTask,
+	rewriteTask,
+	statusOf,
+	SUGGESTED_STATUSES,
+	type Task,
+	tasksDir,
+	template,
+	titleOf,
+	withStatus,
+} from './tasks.js';
 
 export type TaskDeps = {
 	/** The hub's projects dir, <YENA_DATA>/md/projects. */
@@ -14,7 +31,8 @@ export type TaskDeps = {
 	now?: () => Date;
 };
 
-const USAGE = 'task list [<project>] | new <project> <name> [<id>] | search [--project <project>] <words>…';
+const USAGE = 'task list [<project>] | new <project> <name> [<id>] | status <project> <id> [<status>] | search [--project <project>] <words>…';
+const STATUS_USAGE = 'task status <project> <id> [<status>]';
 const SEARCH_USAGE = 'task search [--project <project>] <words>…';
 const SEARCH_FILES_MAX = 5000;
 
@@ -23,8 +41,10 @@ const HELP = [
 	'  list [<project>]                            List task files, of every project or of one',
 	'  new <project> <name> [<id>]                 Create md/projects/<project>/tasks/<id>_<name>.md from the template;',
 	'                                              <name> is kebab-case, <id> e.g. TECH-12345 (default: the next TASK-<n>)',
+	'  status <project> <id> [<status>]            Show the task\'s status, or set it (one kebab-case word:',
+	`                                              ${SUGGESTED_STATUSES.join(', ')}…)`,
 	'  search [--project <project>] <words>…       Find similar tasks in every project (that project first)',
-	'Tasks are created only in isolated projects ("project isolate <name>").',
+	'Tasks are created and their status changed only in isolated projects ("project isolate <name>").',
 ].join('\n');
 
 const label = (t: Task): string => `${t.project}/${t.id}`;
@@ -37,13 +57,50 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const tasks = listTasks(deps.md, project);
 		if (tasks.length === 0) return project === undefined ? `No tasks in ${deps.md}` : `No tasks in ${tasksDir(deps.md, project)}`;
 		const width = Math.max(...tasks.map(t => label(t).length));
-		return tasks.map(t => `${label(t).padEnd(width)}  ${titleOf(t.name)}  ${t.file}`).join('\n');
+		const statuses = tasks.map(t => statusLabel(t));
+		const sw = Math.max(...statuses.map(x => x.length));
+		return tasks.map((t, i) => `${label(t).padEnd(width)}  ${statuses[i]!.padEnd(sw)}  ${titleOf(t.name)}  ${t.file}`).join('\n');
 	};
 
-	const create = (project: string, name: string, rawId: string | undefined): string => {
+	const requireIsolated = (project: string) => {
 		if (!deps.isolated().includes(project)) {
 			throw new Error(`${project} is not isolated; run "project isolate ${project}" first`);
 		}
+	};
+
+	const statusLabel = (t: Task): string => {
+		const text = readTask(t.file);
+		return text === undefined ? '?' : (statusOf(text) || '-');
+	};
+
+	const findTask = (project: string, rawId: string): Task => {
+		const id = checkId(rawId);
+		const task = listTasks(deps.md, project).find(t => t.id.toLowerCase() === id.toLowerCase());
+		if (!task) throw new Error(`${project} has no task ${id}; "task list ${project}" lists them`);
+		return task;
+	};
+
+	const status = (project: string, rawId: string, next: string | undefined): string => {
+		const task = findTask(project, rawId);
+		if (next === undefined) {
+			const text = readTask(task.file);
+			if (text === undefined) throw new Error(`Cannot read ${task.file}`);
+			const current = statusOf(text);
+			return current === undefined || current === '' ? `${label(task)}: no status (set one with "${STATUS_USAGE}")` : `${label(task)}: ${current}`;
+		}
+		const value = checkStatus(next);
+		requireIsolated(project);
+		let before: string | undefined;
+		rewriteTask(task.file, text => {
+			before = statusOf(text);
+			return withStatus(text, value);
+		});
+		log.info('task status set', {status: value});
+		return before === value ? `${label(task)}: ${value} (unchanged)` : `${label(task)}: ${before || 'no status'} -> ${value}`;
+	};
+
+	const create = (project: string, name: string, rawId: string | undefined): string => {
+		requireIsolated(project);
 		const existing = listTasks(deps.md, project);
 		const id = rawId === undefined ? nextAutoId(existing) : checkId(rawId);
 		const clash = existing.find(t => t.id.toLowerCase() === id.toLowerCase());
@@ -89,6 +146,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		subcommands: [
 			{name: 'list', aliases: ['ls'], usage: 'task list [<project>]', description: 'List task files', agent: 'safe'},
 			{name: 'new', usage: 'task new <project> <name> [<id>]', description: 'Create a task file from the template', agent: 'safe'},
+			{name: 'status', usage: STATUS_USAGE, description: 'Show or set the status of a task', agent: 'safe'},
 			{name: 'search', usage: SEARCH_USAGE, description: 'Find similar tasks', agent: 'safe'},
 			{name: 'help', usage: 'task help', description: 'Show the usage', agent: 'safe'},
 		],
@@ -107,6 +165,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 				case 'new':
 					if (rest.length < 2 || rest.length > 3) throw new Error('Usage: task new <project> <name> [<id>]');
 					ctx.print(create(checkProject(rest[0]), checkName(rest[1]), rest[2]));
+					return;
+				case 'status':
+					if (rest.length < 2 || rest.length > 3) throw new Error(`Usage: ${STATUS_USAGE}`);
+					ctx.print(status(checkProject(rest[0]), rest[1] as string, rest[2]));
 					return;
 				case 'search':
 					ctx.print(search(rest));

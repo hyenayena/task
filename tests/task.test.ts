@@ -7,7 +7,7 @@ import type {CommandContext, Logger} from '../../../src/api.js';
 import {createTaskCommand} from '../src/commands.js';
 import plugin, {depsFor} from '../src/index.js';
 import {rank, summaryOf, words} from '../src/search.js';
-import {checkName, listTasks, nextAutoId, parseFileName, type Task, template} from '../src/tasks.js';
+import {checkName, checkStatus, listTasks, nextAutoId, parseFileName, statusOf, type Task, template, withStatus} from '../src/tasks.js';
 
 const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'task-')));
 after(() => rmSync(tmp, {recursive: true, force: true}));
@@ -82,7 +82,7 @@ describe('task command', () => {
 		isolate('web');
 		const auto = await run('new', 'web', 'add-login');
 		assert.equal(auto, path.join(md, 'web', 'tasks', 'TASK-1_add-login.md'));
-		assert.match(readFileSync(auto, 'utf8'), /^# TASK-1 Add login\n\nProject: web\nCreated: 2026-10-23\n/);
+		assert.match(readFileSync(auto, 'utf8'), /^# TASK-1 Add login\n\nProject: web\nCreated: 2026-10-23\nStatus: new\n/);
 		assert.equal(await run('new', 'web', 'fix-footer'), path.join(md, 'web', 'tasks', 'TASK-2_fix-footer.md'));
 		assert.equal(await run('new', 'web', 'create-new-module', 'TECH-12345'), path.join(md, 'web', 'tasks', 'TECH-12345_create-new-module.md'));
 	});
@@ -99,8 +99,8 @@ describe('task command', () => {
 		isolate('api');
 		await run('new', 'api', 'add-login-endpoint', 'TECH-7');
 		const all = await run('list');
-		assert.match(all, /^api\/TECH-7 +Add login endpoint +\S+TECH-7_add-login-endpoint\.md$/m);
-		assert.match(all, /^web\/TASK-1 +Add login/m);
+		assert.match(all, /^api\/TECH-7 +new +Add login endpoint +\S+TECH-7_add-login-endpoint\.md$/m);
+		assert.match(all, /^web\/TASK-1 +new +Add login/m);
 		assert.doesNotMatch(await run('list', 'api'), /web\//);
 		assert.match(await run('list', 'none'), /No tasks in/);
 	});
@@ -118,6 +118,40 @@ describe('task command', () => {
 		await assert.rejects(run('search', '--project', 'web'), /Usage: task search/);
 	});
 
+	it('shows and sets the status; setting needs an isolated project', async () => {
+		isolate('web');
+		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: new');
+		assert.equal(await run('status', 'web', 'task-2', 'in-progress'), 'web/TASK-2: new -> in-progress');
+		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress');
+		assert.equal(await run('status', 'web', 'TASK-2', 'in-progress'), 'web/TASK-2: in-progress (unchanged)');
+		const file = path.join(md, 'web', 'tasks', 'TASK-2_fix-footer.md');
+		const text = readFileSync(file, 'utf8');
+		assert.match(text, /\nStatus: in-progress\n/);
+		assert.equal(text.match(/^Status:/gm)?.length, 1, 'one status line');
+		assert.match(await run('list', 'web'), /^web\/TASK-2 +in-progress +Fix footer/m);
+		isolate();
+		await assert.rejects(run('status', 'web', 'TASK-2', 'done'), /web is not isolated/);
+		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress', 'reading works without isolation');
+		isolate('web');
+		await assert.rejects(run('status', 'web', 'TASK-404'), /web has no task TASK-404/);
+		await assert.rejects(run('status', 'web', 'TASK-2', 'Done!'), /one kebab-case word/);
+		await assert.rejects(run('status', 'web'), /Usage: task status/);
+		await assert.rejects(run('status', 'web', 'TASK-9', 'done'), /not a regular file|has no task/);
+	});
+
+	it('gives an older task without a status line one, in its header', async () => {
+		isolate('web');
+		const file = path.join(md, 'web', 'tasks', 'OLD-1_legacy.md');
+		writeFileSync(file, '# OLD-1 Legacy\n\nProject: web\nCreated: 2026-01-01\n\n## Request\n\nStatus: not this one\n');
+		assert.match(await run('status', 'web', 'OLD-1'), /web\/OLD-1: no status/);
+		assert.equal(await run('status', 'web', 'OLD-1', 'done'), 'web/OLD-1: no status -> done');
+		assert.equal(readFileSync(file, 'utf8'), '# OLD-1 Legacy\n\nProject: web\nCreated: 2026-01-01\nStatus: done\n\n## Request\n\nStatus: not this one\n');
+		assert.equal(statusOf('# X\n## Request\nStatus: body\n'), undefined);
+		assert.equal(withStatus('# X\n\n## R\n', 'new'), '# X\nStatus: new\n\n## R\n');
+		assert.equal(withStatus('Status: a\r\n## R', 'b'), 'Status: b\r\n## R');
+		assert.throws(() => checkStatus('x'.repeat(33)), /kebab-case/);
+	});
+
 	it('help, unknown subcommands and the plugin', async () => {
 		assert.match(await run(), /^Usage: task list/);
 		await assert.rejects(run('nope'), /Unknown subcommand: nope/);
@@ -126,6 +160,6 @@ describe('task command', () => {
 		const commands = await plugin({dataDir: path.join(tmp, 'task'), log: noopLog, events: {emit() {}, on: () => () => {}}});
 		assert.deepEqual(commands.map(c => c.name), ['task']);
 		assert.ok(!existsSync(path.join(tmp, 'task')), 'loading writes nothing');
-		assert.equal(listTasks(md).length, 4);
+		assert.equal(listTasks(md).length, 5);
 	});
 });
