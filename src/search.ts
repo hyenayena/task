@@ -1,3 +1,4 @@
+import {bodyOf, fieldOf} from './frontmatter.js';
 import type {Task} from './tasks.js';
 
 export type Hit = {task: Task; score: number; summary: string};
@@ -31,25 +32,28 @@ function weight(query: string, field: Map<string, number>): number {
 	return exact + Math.min(near, PER_WORD_MAX) / 2;
 }
 
-/** The first line of text under the Conclusion heading, else under Request. */
+/** The first line of text under the Conclusion heading, else the first text line of the description. */
 export function summaryOf(text: string): string {
-	const lines = text.split('\n');
-	const pick = (heading: RegExp): string | undefined => {
-		const at = lines.findIndex(l => heading.test(l.trim()));
-		if (at < 0) return undefined;
+	const lines = bodyOf(text).split('\n');
+	const isText = (t: string): boolean => t !== '' && !t.startsWith('#') && !t.startsWith('<!--');
+	const at = lines.findIndex(l => /^#{1,6}\s+Conclusion$/i.test(l.trim()));
+	let s = '';
+	if (at >= 0) {
 		for (const l of lines.slice(at + 1)) {
 			const t = l.trim();
-			if (t.startsWith('#')) return undefined;
-			if (t !== '' && !t.startsWith('<!--')) return t;
+			if (t.startsWith('#')) break;
+			if (isText(t)) {
+				s = t;
+				break;
+			}
 		}
-		return undefined;
-	};
-	const s = pick(/^###?\s+Conclusion$/i) ?? pick(/^##\s+Request$/i) ?? '';
+	}
+	if (s === '') s = lines.map(l => l.trim()).find(isText) ?? '';
 	return s.length > SUMMARY_MAX ? `${s.slice(0, SUMMARY_MAX)}…` : s;
 }
 
 /**
- * Ranks tasks by the query words: the file name weighs most, then headings, then the body.
+ * Ranks tasks by the query words: the id and name weigh most, then headings, then the whole file.
  * Tasks of `project` get a boost, since routine work repeats most within a project.
  */
 export function rank(tasks: {task: Task; text: string}[], query: string, project?: string, limit = 10): Hit[] {
@@ -57,7 +61,7 @@ export function rank(tasks: {task: Task; text: string}[], query: string, project
 	if (q.length === 0) throw new Error('Give words to search for');
 	const hits: Hit[] = [];
 	for (const {task, text} of tasks) {
-		const name = counts(words(`${task.id} ${task.name}`));
+		const name = counts([...new Set(words(`${task.id} ${task.name} ${fieldOf(text, 'name') ?? ''}`))]);
 		const headings = counts(words(text.split('\n').filter(l => l.trimStart().startsWith('#')).join(' ')));
 		const body = counts(words(text));
 		let score = 0;

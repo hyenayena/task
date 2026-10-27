@@ -1,10 +1,11 @@
 {
 	"name": "task",
-	"version": "0.2.0",
-	"description": "Task files in each project's docs (md/projects/<name>/tasks) and search for similar past tasks",
+	"version": "0.3.0",
+	"description": "Task files in each project's docs (md/projects/<name>/tasks): fill and edit them in a form or with commands, and search for similar past tasks",
 	"runtime": "node",
 	"entry": "src/index.ts",
 	"dependencies": {
+		"core": "core",
 		"project": "git@github.com:hyenayena/project.git"
 	}
 }

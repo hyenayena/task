@@ -1,13 +1,15 @@
 import {closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, constants} from 'node:fs';
 import path from 'node:path';
 import {isProjectName} from './deps/project.js';
+import {bodyOf, type Field, fieldOf, fieldsOf, render, withBody, withField, withoutField} from './frontmatter.js';
+
+export {type Field, fieldOf, fieldsOf, withField, withoutField} from './frontmatter.js';
 
 export const TASKS_DIR = 'tasks';
 export const AUTO_PREFIX = 'TASK';
 
 // The id ends at the first underscore, so ids have none.
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/;
-const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NAME_MAX = 80;
 const FILE_RE = /^([A-Za-z0-9][A-Za-z0-9-]{0,31})_([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const AUTO_RE = new RegExp(`^${AUTO_PREFIX}-([0-9]{1,9})$`);
@@ -17,8 +19,6 @@ const STATUS_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STATUS_MAX = 32;
 export const DEFAULT_STATUS = 'new';
 export const SUGGESTED_STATUSES = ['new', 'in-progress', 'review', 'done', 'blocked', 'cancelled'];
-// The status line sits in the header, before the first "## " section.
-const STATUS_LINE = /^Status:[ \t]*(.*)$/;
 
 export type Task = {project: string; id: string; name: string; file: string};
 
@@ -29,11 +29,11 @@ export function checkProject(v: string | undefined): string {
 	return v;
 }
 
-export function checkName(v: string | undefined): string {
-	if (v === undefined || v.length > NAME_MAX || !NAME_RE.test(v)) {
-		throw new Error('The task name must be kebab-case: lowercase letters and digits joined by "-" (e.g. create-new-module)');
-	}
-	return v;
+/** The task name as people write it: one line, spaces allowed; the file name is its kebab-case form. */
+export function checkTitle(v: string | undefined): string {
+	const title = checkFieldValue(v, 'The task name');
+	if (title.length > NAME_MAX) throw new Error(`The task name is longer than ${NAME_MAX} characters`);
+	return title;
 }
 
 export function checkId(v: string): string {
@@ -87,37 +87,17 @@ export const titleOf = (name: string): string => {
 	return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
-export function template(p: {project: string; id: string; name: string; date: string}): string {
-	return [
-		`# ${p.id} ${titleOf(p.name)}`,
-		'',
-		`Project: ${p.project}`,
-		`Created: ${p.date}`,
-		`Status: ${DEFAULT_STATUS}`,
-		'',
-		'## Request',
-		'',
-		'<!-- What the user asked for; their own words where they matter. -->',
-		'',
-		'## Similar tasks',
-		'',
-		'<!-- Found with "task search": which ones, and what was taken from them. -->',
-		'',
-		'## Plan',
-		'',
-		'## Outcome',
-		'',
-		'<!-- Written by the documentator when the work on the task is done. -->',
-		'',
-		'### Conclusion',
-		'',
-		'### Specifics',
-		'',
-		'### Asked by the user',
-		'',
-		'### Changes and why',
-		'',
-	].join('\n');
+export function template(p: {project: string; title: string; date: string; description: string; status?: string; fields?: Field[]}): string {
+	return render(
+		[
+			{key: 'name', value: p.title},
+			{key: 'project', value: p.project},
+			{key: 'created', value: p.date},
+			{key: 'status', value: p.status ?? DEFAULT_STATUS},
+			...(p.fields ?? []),
+		],
+		p.description,
+	);
 }
 
 /** Exclusive create: an existing file is never overwritten. */
@@ -154,35 +134,17 @@ export function checkStatus(v: string | undefined): string {
 	return v;
 }
 
-const headerEnd = (lines: string[]): number => {
-	const at = lines.findIndex(l => l.startsWith('## '));
-	return at < 0 ? lines.length : at;
-};
+export const statusOf = (text: string): string | undefined => fieldOf(text, 'status');
 
-/** The status in the file's header; undefined when the file has no status line (older tasks). */
-export function statusOf(text: string): string | undefined {
-	const lines = text.split('\n');
-	for (const line of lines.slice(0, headerEnd(lines))) {
-		const m = STATUS_LINE.exec(line.replace(/\r$/, ''));
-		if (m) return (m[1] as string).trim();
-	}
-	return undefined;
-}
+export const withStatus = (text: string, status: string): string => withField(text, 'status', status);
 
-/** The text with its status line set; a file without one gets it after "Created:" (or "Project:", or the title). */
-export function withStatus(text: string, status: string): string {
-	const lines = text.split('\n');
-	const end = headerEnd(lines);
-	const at = lines.slice(0, end).findIndex(l => STATUS_LINE.test(l.replace(/\r$/, '')));
-	if (at >= 0) {
-		lines[at] = `Status: ${status}${lines[at]!.endsWith('\r') ? '\r' : ''}`;
-		return lines.join('\n');
-	}
-	const after = ['Created:', 'Project:'].map(k => lines.slice(0, end).findIndex(l => l.startsWith(k))).find(i => i >= 0);
-	const insertAt = after !== undefined ? after + 1 : lines[0]?.startsWith('# ') ? 1 : 0;
-	lines.splice(insertAt, 0, `Status: ${status}`);
-	return lines.join('\n');
-}
+/** The name as people wrote it; the file name holds only its kebab-case form. */
+export const nameIn = (text: string): string | undefined => fieldOf(text, 'name') || undefined;
+
+/** The description is the Markdown body after the properties. */
+export const descriptionOf = bodyOf;
+
+export const withDescription = withBody;
 
 /**
  * Replaces a task file in one step: written next to it and renamed over it, never through a symlink.
@@ -202,4 +164,60 @@ export function rewriteTask(file: string, change: (text: string) => string): voi
 		rmSync(tmp, {force: true});
 		throw new Error(`Cannot write ${file}: ${(error as NodeJS.ErrnoException).code ?? 'write failed'}`);
 	}
+}
+
+const FIELD_KEY_RE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/;
+const VALUE_MAX = 1000;
+const CONTROL = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f]');
+/** Written by the command itself; never set or removed by hand. */
+export const FIXED_FIELDS = ['project', 'created'];
+/** Every task has them. */
+export const REQUIRED_FIELDS = ['status'];
+// The name goes with the file name; the description is the body, not a property.
+const NAME_FIELDS = ['id', 'name'];
+const BODY_FIELDS = ['description'];
+
+const isIn = (key: string, list: string[]): boolean => list.some(k => k.toLowerCase() === key.toLowerCase());
+export const isExtraKey = (key: string): boolean => !isIn(key, [...FIXED_FIELDS, ...REQUIRED_FIELDS, ...NAME_FIELDS, ...BODY_FIELDS]);
+
+/** The properties a user or a model added (everything but name, project, created and status). */
+export const extraFields = (text: string): Field[] => fieldsOf(text).filter(f => isExtraKey(f.key));
+
+/**
+ * The added properties a one-line form can edit and write back unchanged. Lists and keys written
+ * elsewhere (e.g. "due date" from Obsidian) are left out, so saving the form never touches them.
+ */
+export const formFields = (text: string): Field[] =>
+	extraFields(text).filter(f => !f.list && FIELD_KEY_RE.test(f.key) && f.value !== '' && !CONTROL.test(f.value) && f.value.length <= VALUE_MAX);
+
+/** A description the form's one-line field can hold. */
+export const isOneLine = (text: string): boolean => text !== '' && !CONTROL.test(text) && text.length <= VALUE_MAX;
+
+export function checkFieldKey(v: string | undefined): string {
+	if (v === undefined || !FIELD_KEY_RE.test(v)) throw new Error('A field name starts with a letter and holds letters, digits and "-", up to 32 characters (e.g. Priority)');
+	if (isIn(v, FIXED_FIELDS)) throw new Error(`${v} is set when the task is created and cannot be changed`);
+	if (isIn(v, NAME_FIELDS)) throw new Error(`${v} is part of the file name and cannot be changed`);
+	return v;
+}
+
+/** One line of text: trimmed, not empty, at most VALUE_MAX characters, no control characters. */
+export function checkFieldValue(v: string | undefined, what = 'The value'): string {
+	const value = (v ?? '').trim();
+	if (value === '') throw new Error(`${what} must not be empty`);
+	if (CONTROL.test(value)) throw new Error(`${what} must be one line without control characters`);
+	if (value.length > VALUE_MAX) throw new Error(`${what} is longer than ${VALUE_MAX} characters`);
+	return value;
+}
+
+export const checkDescription = (v: string | undefined): string => checkFieldValue(v, 'The description');
+
+/** The kebab-case form of a text for a file name: its first latin words, or "" when it has none. */
+export function slugOf(text: string): string {
+	const words = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+	const out: string[] = [];
+	for (const w of words.slice(0, 6)) {
+		if ([...out, w].join('-').length > 50) break;
+		out.push(w);
+	}
+	return out.join('-');
 }
