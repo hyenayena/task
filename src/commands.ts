@@ -48,9 +48,7 @@ import {
 import type {TaskFormAction, TaskFormValues} from './ui/task-form.js';
 
 export type TaskDeps = {
-	/** The hub's projects dir, <YENA_DATA>/md/projects. */
 	md: string;
-	/** The isolated projects of the work session (the project module's). */
 	isolated: () => string[];
 	log?: Logger;
 	now?: () => Date;
@@ -67,7 +65,6 @@ const UNSET_USAGE = 'task unset <project> <id> <field>';
 const DELETE_USAGE = 'task delete <project> <id>';
 const LIST_USAGE = 'task list [project] [--all]';
 const SEARCH_USAGE = 'task search [--project <project>] [--status <status>] [--limit <n>] <query>…';
-// The one-line form in usage errors.
 const LINE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
 const USAGE = 'task <subcommand>';
 const SEARCH_FILES_MAX = 5000;
@@ -131,7 +128,6 @@ const SUBCOMMANDS: Subcommand[] = [
 		agent: 'safe',
 	},
 	{name: 'statuses', usage: STATUSES_USAGE, description: 'The statuses a task of the project may have', args: [PROJECT], agent: 'safe'},
-	// The list is the user's rule for the assistant, so the assistant does not change it unasked.
 	{
 		name: 'set-statuses',
 		usage: SET_STATUSES_USAGE,
@@ -169,10 +165,8 @@ const NOTES = [
 
 const label = (t: Task): string => `${t.project}/${t.id}`;
 
-/** The name property; a task without one falls back to its file name. */
 const nameOf = (t: Task, text: string | undefined): string => (text === undefined ? undefined : nameIn(text)) ?? titleOf(t.name);
 
-/** The first text line of the description, without Markdown heading marks. */
 const firstLineOf = (description: string): string =>
 	description
 		.split('\n')
@@ -183,10 +177,6 @@ const cut = (text: string, max: number): string => (text.length > max ? `${text.
 
 type NewSpec = {project?: string; id?: string; name?: string; status?: string; description?: string};
 
-/**
- * One option value: a single word, or words from one starting with `"` to one ending with it.
- * The console splits lines on whitespace and knows no quotes, so they are joined here.
- */
 function readQuoted(args: string[], at: number): {value: string; last: number} {
 	const first = args[at];
 	if (first === undefined) throw new Error(`--name needs a value. Usage: ${NEW_USAGE}`);
@@ -230,7 +220,6 @@ function parseNew(args: string[]): NewSpec {
 
 const sameKey = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
-/** A field a user or a model adds: not a built-in one, not given twice. */
 function checkExtraKey(key: string, taken: string[]): string {
 	checkFieldKey(key);
 	if (!isExtraKey(key)) throw new Error(`${key} is a built-in field`);
@@ -238,7 +227,6 @@ function checkExtraKey(key: string, taken: string[]): string {
 	return key;
 }
 
-/** The added fields with a value, checked; an empty value drops the field. */
 function checkExtras(fields: Field[]): Field[] {
 	const out: Field[] = [];
 	for (const f of fields) {
@@ -303,14 +291,12 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	const allowedText = (project: string): string => allowedStatuses(readStatuses(deps.md, project)).join(', ');
 
-	/** A status the project's list allows; `current` (the task's own) is kept even when the list dropped it. */
 	const checkAllowed = (project: string, raw: string | undefined, current?: string): string => {
 		const value = checkStatus(raw);
 		if (value === current || isAllowedStatus(readStatuses(deps.md, project), value)) return value;
 		throw new Error(`${value} is not a status of ${project}; use one of: ${allowedText(project)} ("${STATUSES_USAGE}")`);
 	};
 
-	/** Says when a task holds a status its project's list no longer has. */
 	const offListNote = (project: string, status: string | undefined): string | undefined =>
 		status === undefined || status === '' || isAllowedStatus(readStatuses(deps.md, project), status)
 			? undefined
@@ -445,7 +431,6 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return `Deleted ${label(task)} (${task.file})`;
 	};
 
-	// `withNewDescription` false: the form showed the description read-only (several lines are more than its field holds).
 	const update = (task: Task, values: TaskFormValues, withNewDescription: boolean): void => {
 		const taskStatus = checkAllowed(task.project, values.status, statusOf(textOf(task)));
 		const description = withNewDescription ? checkDescription(values.description) : undefined;
@@ -506,7 +491,6 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return lines.join('\n');
 	};
 
-	// The form in the console panel; "Save and discuss" then sends the task to the open chat ("claude send").
 	const openForm = async (ctx: CommandContext, project: string, existing: Task | undefined, preset: NewSpec): Promise<void> => {
 		requireIsolated(project);
 		const ui = await import('./ui/task-form.js');

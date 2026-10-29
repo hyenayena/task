@@ -1,19 +1,16 @@
 import {bodyOf, bodyStart, fieldOf} from './frontmatter.js';
 import type {Task} from './tasks.js';
 
-/** A line of the file (1-based, as editors and Read count them) where the query matched. */
 export type Line = {line: number; text: string};
 export type Hit = {task: Task; score: number; summary: string; lines: Line[]};
 export type RankOptions = {project?: string; limit?: number};
 
-/** One part of a query: a task id (or label, or number), a word, or a quoted phrase that must appear. */
 export type Unit =
 	| {kind: 'id'; project?: string; id: string; words: string[]}
 	| {kind: 'word'; word: string}
 	| {kind: 'phrase'; text: string};
 
 const WORD_RE = /[\p{L}\p{N}]+/gu;
-// web/TASK-12, TASK-12 or 12; a token without a digit is a plain word.
 const ID_TOKEN = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)\/)?([A-Za-z0-9][A-Za-z0-9-]*)$/;
 const EDGE_PUNCT = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
 const PER_WORD_MAX = 3;
@@ -27,7 +24,6 @@ const PHRASE_IN_TEXT = 3;
 const QUERY_IN_NAME = 4;
 const QUERY_IN_TEXT = 2;
 const SAME_PROJECT_BOOST = 1.5;
-// Hits under this share of the best score are noise next to it.
 const RELEVANT_SHARE = 0.2;
 const SUMMARY_MAX = 160;
 const LINE_MAX = 160;
@@ -40,11 +36,9 @@ export function words(text: string): string[] {
 
 const normal = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
-// "module" finds "modules" and the other way round, without a stemmer.
 const related = (a: string, b: string): boolean =>
 	a.length >= PREFIX_MIN && b.length >= PREFIX_MIN && (a.startsWith(b) || b.startsWith(a));
 
-/** Edit distance with swaps of neighbours (optimal string alignment); k + 1 once it exceeds k. */
 export function distance(a: string, b: string, k: number): number {
 	if (Math.abs(a.length - b.length) > k) return k + 1;
 	let before: number[] = [];
@@ -84,7 +78,6 @@ export function parseQuery(raw: string): Unit[] {
 		for (const raw of part.split(/\s+/)) {
 			const token = raw.replace(EDGE_PUNCT, '');
 			const m = ID_TOKEN.exec(token);
-			// oauth2 or ipv6 are words; TECH-1 and web/TECH-1 name a task or nothing. A bare number may also be text (429).
 			const number = /^\d+$/.test(token);
 			if (m && /\d/.test(m[2]!) && (m[1] !== undefined || m[2]!.includes('-') || number)) {
 				add(`#${token.toLowerCase()}`, {kind: 'id', ...(m[1] !== undefined && {project: m[1].toLowerCase()}), id: m[2]!.toLowerCase(), words: number ? words(token) : []});
@@ -114,7 +107,6 @@ function counts(list: string[]): Map<string, number> {
 	return m;
 }
 
-/** Word matching for one query: exact, by prefix, or with a typo. Typo checks are cached across files. */
 function matcher() {
 	const typos = new Map<string, boolean>();
 	const typo = (q: string, w: string): boolean => {
@@ -142,7 +134,6 @@ function matcher() {
 	return {matches, weight};
 }
 
-/** The first line of text under the Conclusion heading, else the first text line of the description. */
 export function summaryOf(text: string): string {
 	const lines = bodyOf(text).split('\n');
 	const isText = (t: string): boolean => t !== '' && !t.startsWith('#') && !t.startsWith('<!--');
@@ -164,7 +155,6 @@ export function summaryOf(text: string): string {
 
 const cutLine = (t: string): string => (t.length > LINE_MAX ? `${t.slice(0, LINE_MAX)}…` : t);
 
-/** The body lines with most of the matched words and phrases, in file order; the summary is not repeated. */
 function linesOf(text: string, found: string[], phrases: string[], summary: string, matches: (q: string, w: string) => boolean): Line[] {
 	const all = text.split('\n');
 	const scored: Array<Line & {n: number}> = [];
@@ -185,12 +175,6 @@ function linesOf(text: string, found: string[], phrases: string[], summary: stri
 		.map(({line, text: t}) => ({line, text: t}));
 }
 
-/**
- * Ranks tasks by the query: an exact id or label wins outright, a bare number finds the id with that
- * number; words in the id and name weigh most, then headings, then the whole file, with word forms and
- * typos at lower weight; quoted phrases must appear. Tasks of `project` get a boost, since routine work
- * repeats most within a project.
- */
 export function rank(tasks: {task: Task; text: string}[], query: string, opts: RankOptions = {}): Hit[] {
 	const units = parseQuery(query);
 	const {matches, weight} = matcher();
@@ -237,7 +221,6 @@ export function rank(tasks: {task: Task; text: string}[], query: string, opts: R
 		}
 		if (missing || score === 0) continue;
 		if (whole !== undefined) score += lowName.includes(whole) ? QUERY_IN_NAME : lowText.includes(whole) ? QUERY_IN_TEXT : 0;
-		// Matching more of the query beats repeating one part of it.
 		score *= matched / units.length;
 		if (opts.project !== undefined && task.project === opts.project) score *= SAME_PROJECT_BOOST;
 		scored.push({task, text, score, found, phrases});

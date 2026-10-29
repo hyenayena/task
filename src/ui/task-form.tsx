@@ -11,18 +11,13 @@ export type TaskFormSpec = {
 	title: string;
 	project: string;
 	id: string;
-	// A new task: its number and file name can still be chosen.
 	isNew: boolean;
 	status: string;
-	// Shown dim in the emptied status field: the statuses the project allows.
 	statusHint?: string;
 	description: string;
-	// The description has more lines than the one-line field holds: shown, not edited.
 	descriptionReadOnly?: boolean;
 	fields: Field[];
-	// Shown dim in the empty name field.
 	namePlaceholder?: string;
-	// Writes the task; throws with a message the form shows.
 	save: (values: TaskFormValues) => void;
 	validateKey: (key: string, taken: string[]) => string | undefined;
 	onDone: (action: TaskFormAction) => void;
@@ -82,7 +77,6 @@ export function taskForm(control: MountControl, spec: TaskFormSpec): UiElement {
 
 export function projectPicker(control: MountControl, projects: string[], onPick: (project: string) => void): UiElement {
 	const host = control.host ? {host: control.host} : {};
-	// Enter calls close() and then onPick() in the same tick, before the mount resolves.
 	return (
 		<ListPicker
 			title="New task · which project?"

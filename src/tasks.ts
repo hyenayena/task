@@ -8,21 +8,16 @@ export {type Field, fieldOf, fieldsOf, withField, withoutField} from './frontmat
 export const TASKS_DIR = 'tasks';
 export const AUTO_PREFIX = 'TASK';
 
-// The id ends at the first underscore, so ids have none.
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/;
 const NAME_MAX = 80;
 const FILE_RE = /^([A-Za-z0-9][A-Za-z0-9-]{0,31})_([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const AUTO_RE = new RegExp(`^${AUTO_PREFIX}-([0-9]{1,9})$`);
 const READ_MAX = 256 * 1024;
-// One kebab-case word: todo, in-progress, review, done…
 const STATUS_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STATUS_MAX = 32;
 const STATUSES_MAX = 20;
-/** `task list` hides tasks with this status; `task list --all` and `task search` still show them. Allowed in every project. */
 export const ARCHIVED_STATUS = 'archived';
-/** The statuses of a project without its own list. */
 export const DEFAULT_STATUSES = ['todo', 'in-progress', 'done'];
-/** A project's own list, in its tasks folder; the name has no "_", so it is never taken for a task. */
 export const STATUSES_FILE = 'statuses.md';
 
 export type Task = {project: string; id: string; name: string; file: string};
@@ -34,7 +29,6 @@ export function checkProject(v: string | undefined): string {
 	return v;
 }
 
-/** The task name as people write it: one line, spaces allowed; the file name is its kebab-case form. */
 export function checkTitle(v: string | undefined): string {
 	const title = checkFieldValue(v, 'The task name');
 	if (title.length > NAME_MAX) throw new Error(`The task name is longer than ${NAME_MAX} characters`);
@@ -53,7 +47,6 @@ export function parseFileName(file: string): {id: string; name: string} | undefi
 	return m ? {id: m[1] as string, name: m[2] as string} : undefined;
 }
 
-// Real folders and files only: a symlink could point the search outside the docs.
 function realEntries(dir: string, kind: 'dir' | 'file'): string[] {
 	try {
 		return readdirSync(dir, {withFileTypes: true})
@@ -105,7 +98,6 @@ export function template(p: {project: string; title: string; date: string; descr
 	);
 }
 
-/** Exclusive create: an existing file is never overwritten. */
 export function createTaskFile(file: string, text: string): void {
 	try {
 		writeFileSync(file, text, {flag: 'wx', mode: 0o644});
@@ -115,7 +107,6 @@ export function createTaskFile(file: string, text: string): void {
 	}
 }
 
-/** At most READ_MAX bytes of a regular file, never through a symlink; undefined when unreadable. */
 export function readTask(file: string): string | undefined {
 	let fd: number | undefined;
 	try {
@@ -139,17 +130,14 @@ export function checkStatus(v: string | undefined): string {
 	return v;
 }
 
-/** The statuses a project's tasks may have: its list (its own or the default) and archived. */
 export type Statuses = {list: string[]; own: boolean};
 
 export const allowedStatuses = (s: Statuses): string[] => (s.list.includes(ARCHIVED_STATUS) ? s.list : [...s.list, ARCHIVED_STATUS]);
 
 export const isAllowedStatus = (s: Statuses, status: string): boolean => allowedStatuses(s).includes(status);
 
-/** The status of a new task: the first of the list that is not archived. */
 export const firstStatus = (s: Statuses): string => s.list.find(x => x !== ARCHIVED_STATUS) as string;
 
-/** A list to keep: kebab-case words, no repeats, at least one besides archived. */
 export function checkStatuses(values: string[]): string[] {
 	const list = values.map(v => checkStatus(v));
 	const repeated = list.find((v, i) => list.indexOf(v) !== i);
@@ -163,7 +151,6 @@ export const statusesFile = (md: string, project: string): string => path.join(t
 
 const STATUS_ITEM_RE = /^[-*+]\s+(\S.*?)\s*$/;
 
-/** The list items ("- todo") of a statuses file; headings and other lines are notes for people. */
 export function parseStatuses(text: string): string[] {
 	const items = text.split('\n').flatMap(line => {
 		const m = STATUS_ITEM_RE.exec(line.trim());
@@ -182,7 +169,6 @@ export const renderStatuses = (project: string, list: string[]): string =>
 		'',
 	].join('\n');
 
-/** The project's own list, or the default when it has none. */
 export function readStatuses(md: string, project: string): Statuses {
 	const file = statusesFile(md, project);
 	try {
@@ -217,18 +203,12 @@ export const statusOf = (text: string): string | undefined => fieldOf(text, 'sta
 
 export const withStatus = (text: string, status: string): string => withField(text, 'status', status);
 
-/** The name as people wrote it; the file name holds only its kebab-case form. */
 export const nameIn = (text: string): string | undefined => fieldOf(text, 'name') || undefined;
 
-/** The description is the Markdown body after the properties. */
 export const descriptionOf = bodyOf;
 
 export const withDescription = withBody;
 
-/**
- * Replaces a task file in one step: written next to it and renamed over it, never through a symlink.
- * Larger files than a search reads are refused rather than cut.
- */
 export function rewriteTask(file: string, change: (text: string) => string): void {
 	const st = lstatSync(file);
 	if (!st.isFile()) throw new Error(`${file} is not a regular file`);
@@ -252,28 +232,19 @@ function replaceFile(file: string, text: string, mode: number): void {
 const FIELD_KEY_RE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/;
 const VALUE_MAX = 1000;
 const CONTROL = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f]');
-/** Written by the command itself; never set or removed by hand. */
 export const FIXED_FIELDS = ['project', 'created'];
-/** Every task has them. */
 export const REQUIRED_FIELDS = ['status'];
-// The name goes with the file name; the description is the body, not a property.
 const NAME_FIELDS = ['id', 'name'];
 const BODY_FIELDS = ['description'];
 
 const isIn = (key: string, list: string[]): boolean => list.some(k => k.toLowerCase() === key.toLowerCase());
 export const isExtraKey = (key: string): boolean => !isIn(key, [...FIXED_FIELDS, ...REQUIRED_FIELDS, ...NAME_FIELDS, ...BODY_FIELDS]);
 
-/** The properties a user or a model added (everything but name, project, created and status). */
 export const extraFields = (text: string): Field[] => fieldsOf(text).filter(f => isExtraKey(f.key));
 
-/**
- * The added properties a one-line form can edit and write back unchanged. Lists and keys written
- * elsewhere (e.g. "due date" from Obsidian) are left out, so saving the form never touches them.
- */
 export const formFields = (text: string): Field[] =>
 	extraFields(text).filter(f => !f.list && FIELD_KEY_RE.test(f.key) && f.value !== '' && !CONTROL.test(f.value) && f.value.length <= VALUE_MAX);
 
-/** A description the form's one-line field can hold. */
 export const isOneLine = (text: string): boolean => text !== '' && !CONTROL.test(text) && text.length <= VALUE_MAX;
 
 export function checkFieldKey(v: string | undefined): string {
@@ -283,7 +254,6 @@ export function checkFieldKey(v: string | undefined): string {
 	return v;
 }
 
-/** One line of text: trimmed, not empty, at most VALUE_MAX characters, no control characters. */
 export function checkFieldValue(v: string | undefined, what = 'The value'): string {
 	const value = (v ?? '').trim();
 	if (value === '') throw new Error(`${what} must not be empty`);
@@ -294,7 +264,6 @@ export function checkFieldValue(v: string | undefined, what = 'The value'): stri
 
 export const checkDescription = (v: string | undefined): string => checkFieldValue(v, 'The description');
 
-/** The kebab-case form of a text for a file name: its first latin words, or "" when it has none. */
 export function slugOf(text: string): string {
 	const words = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 	const out: string[] = [];

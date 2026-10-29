@@ -14,7 +14,6 @@ import type {FormField, FormValue} from '../src/ui/kit.js';
 const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'task-')));
 after(() => rmSync(tmp, {recursive: true, force: true}));
 const md = path.join(tmp, 'md', 'projects');
-// What the project module reports as isolated; its state format is its own business.
 let isolatedNow: string[] = [];
 const isolate = (...names: string[]) => void (isolatedNow = names);
 
@@ -305,7 +304,6 @@ describe('task command', () => {
 });
 
 type Press = {button: string; edit?: (values: FormValue[]) => FormValue[]};
-// Drives the form without a terminal: the mounted element is core's Form, whose props are pressed directly.
 const formRun = async (args: string[], presses: Press[], opts: {runLine?: (line: string) => boolean} = {}) => {
 	const printed: string[] = [];
 	const lines: string[] = [];
