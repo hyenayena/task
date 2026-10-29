@@ -1,7 +1,7 @@
 {
 	"name": "task",
-	"version": "0.4.0",
-	"description": "Task files in each project's docs (md/projects/<name>/tasks): fill and edit them in a form or with commands, and search them by id, name and text (archived ones are hidden from the list)",
+	"version": "0.5.0",
+	"description": "Task files in each project's docs (md/projects/<name>/tasks): fill and edit them in a form or with commands, and search them by id, name and text (archived ones are hidden from the list); each project has its own list of statuses",
 	"runtime": "node",
 	"entry": "src/index.ts",
 	"dependencies": {

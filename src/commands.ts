@@ -8,13 +8,17 @@ import {
 	checkFieldKey,
 	checkFieldValue,
 	checkId,
+	allowedStatuses,
 	checkProject,
 	checkStatus,
+	checkStatuses,
 	checkTitle,
 	createTaskFile,
+	DEFAULT_STATUSES,
 	descriptionOf,
-	DEFAULT_STATUS,
 	type Field,
+	firstStatus,
+	isAllowedStatus,
 	fieldOf,
 	fieldsOf,
 	formFields,
@@ -23,12 +27,13 @@ import {
 	listTasks,
 	nameIn,
 	nextAutoId,
+	readStatuses,
 	readTask,
 	REQUIRED_FIELDS,
 	rewriteTask,
 	slugOf,
+	statusesFile,
 	statusOf,
-	SUGGESTED_STATUSES,
 	ARCHIVED_STATUS,
 	type Task,
 	tasksDir,
@@ -38,6 +43,7 @@ import {
 	withField,
 	withoutField,
 	withStatus,
+	writeStatuses,
 } from './tasks.js';
 import type {TaskFormAction, TaskFormValues} from './ui/task-form.js';
 
@@ -52,6 +58,8 @@ export type TaskDeps = {
 
 const NEW_USAGE = 'task new [<project>] [--id <id>] [--name <name>] [--status <status>] [<description…>]';
 const STATUS_USAGE = 'task status <project> <id> [<status>]';
+const STATUSES_USAGE = 'task statuses <project>';
+const SET_STATUSES_USAGE = 'task set-statuses <project> <status…>';
 const SHOW_USAGE = 'task show <project> <id>';
 const EDIT_USAGE = 'task edit <project> <id>';
 const SET_USAGE = 'task set <project> <id> <field> <value…>';
@@ -59,7 +67,7 @@ const UNSET_USAGE = 'task unset <project> <id> <field>';
 const DELETE_USAGE = 'task delete <project> <id>';
 const LIST_USAGE = 'task list [<project>] [--all]';
 const SEARCH_USAGE = 'task search [--project <p>] [--status <s>] [--limit <n>] <id | words | "phrase">…';
-const USAGE = 'task list | new | show | edit | set | unset | status | delete | search (task help for details)';
+const USAGE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
 const SEARCH_FILES_MAX = 5000;
 const SEARCH_LIMIT = 10;
 const SEARCH_LIMIT_MAX = 50;
@@ -79,8 +87,10 @@ const HELP = [
 	`  ${EDIT_USAGE.padEnd(44)}Edit the task in a form (in the app)`,
 	`  ${SET_USAGE.padEnd(44)}Set a field: status, description or any other`,
 	`  ${UNSET_USAGE.padEnd(44)}Remove a field you added (status and description are required)`,
-	`  ${STATUS_USAGE.padEnd(44)}Show the status, or set it (one kebab-case word:`,
-	`  ${''.padEnd(44)}${SUGGESTED_STATUSES.join(', ')}…)`,
+	`  ${STATUS_USAGE.padEnd(44)}Show the status, or set it to one of the project's statuses`,
+	`  ${STATUSES_USAGE.padEnd(44)}The statuses a task of the project may have`,
+	`  ${SET_STATUSES_USAGE.padEnd(44)}Set the project's own list, in order; a new task gets the first`,
+	`  ${''.padEnd(44)}(default: ${DEFAULT_STATUSES.join(', ')}; ${ARCHIVED_STATUS} is always allowed)`,
 	`  ${DELETE_USAGE.padEnd(44)}Delete the task file`,
 	`  ${SEARCH_USAGE}`,
 	'                                              Find tasks in every project (archived too): by id (web/TASK-1,',
@@ -226,13 +236,30 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return text;
 	};
 
+	const allowedText = (project: string): string => allowedStatuses(readStatuses(deps.md, project)).join(', ');
+
+	/** A status the project's list allows; `current` (the task's own) is kept even when the list dropped it. */
+	const checkAllowed = (project: string, raw: string | undefined, current?: string): string => {
+		const value = checkStatus(raw);
+		if (value === current || isAllowedStatus(readStatuses(deps.md, project), value)) return value;
+		throw new Error(`${value} is not a status of ${project}; use one of: ${allowedText(project)} ("${STATUSES_USAGE}")`);
+	};
+
+	/** Says when a task holds a status its project's list no longer has. */
+	const offListNote = (project: string, status: string | undefined): string | undefined =>
+		status === undefined || status === '' || isAllowedStatus(readStatuses(deps.md, project), status)
+			? undefined
+			: `not a status of ${project} (${allowedText(project)})`;
+
 	const status = (project: string, rawId: string, next: string | undefined): string => {
 		const task = findTask(project, rawId);
 		if (next === undefined) {
 			const current = statusOf(textOf(task));
-			return current === undefined || current === '' ? `${label(task)}: no status (set one with "${STATUS_USAGE}")` : `${label(task)}: ${current}`;
+			if (current === undefined || current === '') return `${label(task)}: no status (set one with "${STATUS_USAGE}")`;
+			const note = offListNote(project, current);
+			return `${label(task)}: ${current}${note === undefined ? '' : ` (${note})`}`;
 		}
-		const value = checkStatus(next);
+		const value = checkAllowed(project, next);
 		requireIsolated(project);
 		let before: string | undefined;
 		rewriteTask(task.file, text => {
@@ -250,7 +277,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const clash = existing.find(t => t.id.toLowerCase() === id.toLowerCase());
 		if (clash) throw new Error(`${p.project} already has task ${id}: ${clash.file}`);
 		const description = checkDescription(p.description);
-		const taskStatus = checkStatus(p.status ?? DEFAULT_STATUS);
+		const taskStatus = p.status === undefined ? firstStatus(readStatuses(deps.md, p.project)) : checkAllowed(p.project, p.status);
 		const title = p.name === undefined ? titleOf(slugOf(description) || 'task') : checkTitle(p.name);
 		const name = slugOf(title) || slugOf(description) || 'task';
 		const fields = checkExtras(p.fields ?? []);
@@ -268,10 +295,13 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const fields = fieldsOf(text);
 		const description = descriptionOf(text);
 		const missing = [...REQUIRED_FIELDS.filter(k => !fields.some(f => sameKey(f.key, k))), ...(description === '' ? ['description'] : [])];
+		const current = statusOf(text);
+		const note = offListNote(project, current);
 		return [
 			`${label(task)}  ${nameOf(task, text)}`,
 			`File: ${task.file}`,
 			...fields.map(f => `${f.key}: ${f.value}`),
+			...(note === undefined ? [] : [`Status ${current} is ${note}; set one with "${STATUS_USAGE}"`]),
 			...(missing.length > 0 ? [`Missing: ${missing.join(', ')} (set with "${SET_USAGE}")`] : []),
 			...(description === '' ? [] : ['', description]),
 		].join('\n');
@@ -294,7 +324,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		if (sameKey(rawKey, 'description')) return setDescription(task, rawValue);
 		let key: string;
 		let value: string;
-		if (sameKey(rawKey, 'status')) [key, value] = ['status', checkStatus(rawValue.trim())];
+		if (sameKey(rawKey, 'status')) [key, value] = ['status', checkAllowed(project, rawValue.trim())];
 		else [key, value] = [checkFieldKey(rawKey), checkFieldValue(rawValue)];
 		requireIsolated(project);
 		let before: string | undefined;
@@ -317,6 +347,30 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return `${label(task)}: removed ${key}`;
 	};
 
+	const statuses = (project: string): string => {
+		const s = readStatuses(deps.md, project);
+		const where = s.own ? statusesFile(deps.md, project) : `the default; set its own with "${SET_STATUSES_USAGE}"`;
+		return `Statuses of ${project} (${where}): ${allowedStatuses(s).join(', ')}`;
+	};
+
+	const setStatuses = (project: string, values: string[]): string => {
+		const list = checkStatuses(values);
+		requireIsolated(project);
+		const before = readStatuses(deps.md, project);
+		writeStatuses(deps.md, project, list);
+		log.info('task statuses set', {count: list.length});
+		const after = {list, own: true};
+		const off = listTasks(deps.md, project).flatMap(t => {
+			const text = readTask(t.file);
+			const current = text === undefined ? undefined : statusOf(text);
+			return current === undefined || current === '' || isAllowedStatus(after, current) ? [] : [`${label(t)} (${current})`];
+		});
+		return [
+			`Statuses of ${project}: ${allowedStatuses(before).join(', ')} -> ${allowedStatuses(after).join(', ')}`,
+			...(off.length === 0 ? [] : [`${off.length} task${off.length === 1 ? ' has a status' : 's have statuses'} outside the list: ${off.join(', ')}`]),
+		].join('\n');
+	};
+
 	const remove = (project: string, rawId: string): string => {
 		const task = findTask(project, rawId);
 		requireIsolated(project);
@@ -328,7 +382,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	// `withNewDescription` false: the form showed the description read-only (several lines are more than its field holds).
 	const update = (task: Task, values: TaskFormValues, withNewDescription: boolean): void => {
-		const taskStatus = checkStatus(values.status);
+		const taskStatus = checkAllowed(task.project, values.status, statusOf(textOf(task)));
 		const description = withNewDescription ? checkDescription(values.description) : undefined;
 		const fields = checkExtras(values.fields);
 		rewriteTask(task.file, text => {
@@ -403,7 +457,8 @@ export function createTaskCommand(deps: TaskDeps): Command {
 				project,
 				id: existing?.id ?? preset.id ?? nextAutoId(listTasks(deps.md, project)),
 				isNew: existing === undefined,
-				status: (text && statusOf(text)) || preset.status || DEFAULT_STATUS,
+				status: (text && statusOf(text)) || preset.status || firstStatus(readStatuses(deps.md, project)),
+				statusHint: `one of: ${allowedText(project)}`,
 				description: editableDescription ? body || preset.description || '' : `${cut(firstLineOf(body ?? ''), LIST_TEXT_MAX)} (${(body ?? '').split('\n').length} lines: edit the file)`,
 				descriptionReadOnly: !editableDescription,
 				fields: text ? formFields(text) : [],
@@ -498,6 +553,9 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			{name: 'set', usage: SET_USAGE, description: 'Set a field of a task', agent: 'safe'},
 			{name: 'unset', usage: UNSET_USAGE, description: 'Remove an added field of a task', agent: 'safe'},
 			{name: 'status', usage: STATUS_USAGE, description: 'Show or set the status of a task', agent: 'safe'},
+			{name: 'statuses', usage: STATUSES_USAGE, description: "Show a project's task statuses", agent: 'safe'},
+			// The list is the user's rule for the assistant, so the assistant does not change it unasked.
+			{name: 'set-statuses', usage: SET_STATUSES_USAGE, description: "Set a project's task statuses", agent: 'confirm'},
 			{name: 'delete', aliases: ['rm'], usage: DELETE_USAGE, description: 'Delete a task file', agent: 'confirm'},
 			{name: 'search', usage: SEARCH_USAGE, description: 'Find tasks by id, name or text', agent: 'safe'},
 			{name: 'help', usage: 'task help', description: 'Show the usage', agent: 'safe'},
@@ -532,6 +590,14 @@ export function createTaskCommand(deps: TaskDeps): Command {
 				case 'status':
 					if (rest.length < 2 || rest.length > 3) throw new Error(`Usage: ${STATUS_USAGE}`);
 					ctx.print(status(checkProject(rest[0]), rest[1] as string, rest[2]));
+					return;
+				case 'statuses':
+					exactly(rest, 1, STATUSES_USAGE);
+					ctx.print(statuses(checkProject(rest[0])));
+					return;
+				case 'set-statuses':
+					if (rest.length < 2) throw new Error(`Usage: ${SET_STATUSES_USAGE}`);
+					ctx.print(setStatuses(checkProject(rest[0]), rest.slice(1)));
 					return;
 				case 'delete':
 				case 'rm':

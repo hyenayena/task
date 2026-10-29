@@ -20,7 +20,7 @@ A task file is Markdown with properties at the top, as Obsidian writes them; the
 name: Fix login bug
 project: web
 created: 2026-10-27
-status: new
+status: todo
 Priority: high
 ---
 
@@ -28,10 +28,29 @@ The login page fails after logout.
 ```
 
 - `project` and `created` are written by `task new` and cannot be changed; `name` goes with the file name and cannot be changed either.
-- `status`: one kebab-case word up to 32 characters: `new` (the default), `in-progress`, `review`, `done`, `blocked`, `cancelled`, `archived`, or any other. An `archived` task is left out of `task list` (shown with `--all`); `task search` still finds it.
+- `status`: one of the project's statuses (below). An `archived` task is left out of `task list` (shown with `--all`); `task search` still finds it.
 - The description (required) is the body: one line when set by `task new`, `task set` or the form, any Markdown when the file is edited (sections such as `## Plan` or `### Conclusion` are added there by the agents when they have something to write; nothing is pre-filled).
 - Extra properties, added by the user or a model: a key that starts with a letter and holds letters, digits and `-` (up to 32, e.g. `Priority`, `Due-date`), not a built-in one (`project`, `created`, `status`, `description`, `id`, `name`), once per task (case-insensitive); the value is one line.
 - Keys are matched case-insensitively, so older files with `Status:` keep working. Values YAML would read otherwise (`a: b`, `#tag`, `yes`, …) are written in double quotes. Properties written elsewhere that the module does not edit (lists such as `tags:` with `- a` lines, keys with spaces) are shown by `show` (lists joined with `, `) and left untouched by the form; `task set` on such a key replaces it with one line.
+
+## Statuses
+
+Each project has its own list of statuses, kept in `tasks/statuses.md` of its docs (the name has no `_`, so it is never taken for a task); a project without the file uses the default `todo`, `in-progress`, `done`. `archived` is allowed in every project, listed or not. A status is one kebab-case word up to 32 characters; a list holds at most 20, without repeats, and at least one besides `archived`.
+
+```
+# Task statuses of web
+
+One per list item, in order; a new task gets the first. archived is always allowed.
+
+- todo
+- in-progress
+- review
+- done
+```
+
+`task set-statuses` writes the file; it may also be edited by hand: every list item (`- `, `* ` or `+ `) is a status, headings and other lines are notes. A broken file (an item that is not a status, no items) is an error that names the file, never a silent fall back to the default.
+
+The list is enforced for the user and the assistant alike: `task new --status`, `task set … status`, `task status` and the form refuse any other status and name the allowed ones. A new task without `--status` gets the first status of the list that is not `archived`. A task whose status is not (or no longer) in the list keeps it: `task status` and `task show` flag it, the form saves it unchanged, `task set-statuses` lists such tasks after changing the list; `task search --status` takes any status, so old ones are still found.
 
 ## Commands
 
@@ -45,7 +64,9 @@ Writing works only in a project isolated with `project isolate` (the project mod
 - `task show <project> <id>` prints the label and name, the path, every property, `Missing: …` when the status or the description is absent, then the description.
 - `task set <project> <id> <field> <value…>` sets `status`, an extra property (added when missing) or `description` (replaces the whole body with one line); prints `web/TASK-1: Priority = high`, with `(added)` or `(unchanged)`.
 - `task unset <project> <id> <field>` removes an extra property; status and description are refused.
-- `task status <project> <id> [<status>]` prints the status (`web/TASK-2: in-progress`) or sets it (`new -> in-progress`). A task without a status gets one as the last property (a file without properties gets them at the top).
+- `task status <project> <id> [<status>]` prints the status (`web/TASK-2: in-progress`, with `(not a status of web (…))` when the list lacks it) or sets it to one of the project's statuses (`todo -> in-progress`). A task without a status gets one as the last property (a file without properties gets them at the top).
+- `task statuses <project>` prints the project's statuses, `archived` last, and where they come from (its `statuses.md`, or the default).
+- `task set-statuses <project> <status…>` sets the project's own list, in order (isolated projects only); prints the list before and after and the tasks whose status is outside the new one.
 - `task delete <project> <id>` (alias `rm`) deletes the task file.
 - `task search [--project <p>] [--status <s>] [--limit <n>] <id | words | "phrase">…` finds tasks in every project, archived ones too, and prints the best `--limit` (default 10, at most 50): label, name, `[status]`, score, path, the first line under a `Conclusion` heading (else the first text line of the description), then up to two other body lines with the most matches as `L<n>: …` (the file line number, for a read at that line). It serves both a lookup (an id, a name, a phrase) and the search for similar past tasks before planning.
   - Ids: a token with a `-` and a digit (`TECH-12`), a label (`web/TECH-12`) or a bare number (`12`). An exact id or label scores 100, so it comes first; a number matches the number at the end of an id (30) and also counts as a word of the text. An id or label that names no task adds nothing (no fallback to its words). Tokens such as `oauth2` are words.
@@ -54,7 +75,7 @@ Writing works only in a project isolated with `project isolate` (the project mod
   - The score is scaled by the share of query parts found; tasks of `--project` get ×1.5; hits under a fifth of the best score are dropped. `--status` searches only tasks with that status. `--` ends the options.
 - `task` or `task help` prints the usage.
 
-Assistant policies: `edit` is `deny` (a form is for the user), `delete` is `confirm`, the rest `safe`. An assistant reaches all of them through the console MCP tools, so it can do everything the user does except fill the form.
+Assistant policies: `edit` is `deny` (a form is for the user), `delete` and `set-statuses` (the list is the user's rule for the assistant) are `confirm`, the rest `safe`. An assistant reaches all of them through the console MCP tools, so it can do everything the user does except fill the form.
 
 ## Form
 
@@ -68,7 +89,7 @@ Assistant policies: `edit` is `deny` (a form is for the user), `delete` is `conf
 
 ## Layout
 
-`src/`: `index.ts` (plugin; the docs root and the isolation check come from the project module), `deps/project.ts` (project's `docsRootFor`, `isolatedProjects`, `isProjectName`), `ui/kit.ts` (core's kit `Form`, `ListPicker`), `commands.ts`, `tasks.ts` (names, listing, numbering, built-in properties, template, exclusive create, bounded reads), `frontmatter.ts` (reads and edits the properties and the body, pure), `ui/task-form.tsx` (the form and the project picker, loaded only when shown), `search.ts` (ranking). Tests: `npm test`.
+`src/`: `index.ts` (plugin; the docs root and the isolation check come from the project module), `deps/project.ts` (project's `docsRootFor`, `isolatedProjects`, `isProjectName`), `ui/kit.ts` (core's kit `Form`, `ListPicker`), `commands.ts`, `tasks.ts` (names, listing, numbering, built-in properties, project statuses and their file, template, exclusive create, bounded reads), `frontmatter.ts` (reads and edits the properties and the body, pure), `ui/task-form.tsx` (the form and the project picker, loaded only when shown), `search.ts` (ranking). Tests: `npm test`.
 
 ## Residual risks
 

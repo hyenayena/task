@@ -46,7 +46,7 @@ describe('task names', () => {
 
 	it('the template is the properties, then the description as the body', () => {
 		const text = template({project: 'web', title: 'Create new module', date: '2026-10-23', description: 'Make it', fields: [{key: 'Priority', value: 'high'}]});
-		assert.equal(text, '---\nname: Create new module\nproject: web\ncreated: 2026-10-23\nstatus: new\nPriority: high\n---\n\nMake it\n');
+		assert.equal(text, '---\nname: Create new module\nproject: web\ncreated: 2026-10-23\nstatus: todo\nPriority: high\n---\n\nMake it\n');
 	});
 });
 
@@ -178,11 +178,11 @@ describe('task command', () => {
 		isolate('web');
 		const auto = await run('new', 'web', 'Add', 'login');
 		assert.equal(auto, path.join(md, 'web', 'tasks', 'TASK-1_add-login.md'));
-		assert.equal(readFileSync(auto, 'utf8'), '---\nname: Add login\nproject: web\ncreated: 2026-10-23\nstatus: new\n---\n\nAdd login\n');
+		assert.equal(readFileSync(auto, 'utf8'), '---\nname: Add login\nproject: web\ncreated: 2026-10-23\nstatus: todo\n---\n\nAdd login\n');
 		assert.equal(await run('new', 'web', '--name', 'fix-footer', 'The', 'footer', 'overlaps'), path.join(md, 'web', 'tasks', 'TASK-2_fix-footer.md'));
-		const tech = await run('new', 'web', '--id', 'TECH-12345', '--name', 'create-new-module', '--status', 'review', '--', '--odd', 'description');
+		const tech = await run('new', 'web', '--id', 'TECH-12345', '--name', 'create-new-module', '--status', 'done', '--', '--odd', 'description');
 		assert.equal(tech, path.join(md, 'web', 'tasks', 'TECH-12345_create-new-module.md'));
-		assert.match(readFileSync(tech, 'utf8'), /\nstatus: review\n---\n\n--odd description\n$/);
+		assert.match(readFileSync(tech, 'utf8'), /\nstatus: done\n---\n\n--odd description\n$/);
 	});
 
 	it('refuses a taken number, a missing description and bad input', async () => {
@@ -201,8 +201,8 @@ describe('task command', () => {
 		isolate('api');
 		await run('new', 'api', '--id', 'TECH-7', '--name', 'add-login-endpoint', 'OAuth login for the API');
 		const all = await run('list');
-		assert.match(all, /^api\/TECH-7 +new +OAuth login for the API +\S+TECH-7_add-login-endpoint\.md$/m);
-		assert.match(all, /^web\/TASK-1 +new +Add login/m);
+		assert.match(all, /^api\/TECH-7 +todo +OAuth login for the API +\S+TECH-7_add-login-endpoint\.md$/m);
+		assert.match(all, /^web\/TASK-1 +todo +Add login/m);
 		assert.doesNotMatch(await run('list', 'api'), /web\//);
 		assert.match(await run('list', 'none'), /No tasks in/);
 	});
@@ -222,8 +222,8 @@ describe('task command', () => {
 
 	it('shows and sets the status; setting needs an isolated project', async () => {
 		isolate('web');
-		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: new');
-		assert.equal(await run('status', 'web', 'task-2', 'in-progress'), 'web/TASK-2: new -> in-progress');
+		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: todo');
+		assert.equal(await run('status', 'web', 'task-2', 'in-progress'), 'web/TASK-2: todo -> in-progress');
 		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress');
 		assert.equal(await run('status', 'web', 'TASK-2', 'in-progress'), 'web/TASK-2: in-progress (unchanged)');
 		const file = path.join(md, 'web', 'tasks', 'TASK-2_fix-footer.md');
@@ -261,9 +261,9 @@ describe('task command', () => {
 		assert.equal(await run('set', 'web', 'TASK-1', 'Priority', 'high'), 'web/TASK-1: Priority = high (added)');
 		assert.equal(await run('set', 'web', 'TASK-1', 'priority', 'low'), 'web/TASK-1: priority = low');
 		assert.equal(await run('set', 'web', 'TASK-1', 'Priority', 'low'), 'web/TASK-1: Priority = low (unchanged)');
-		assert.equal(await run('set', 'web', 'TASK-1', 'STATUS', 'review'), 'web/TASK-1: status = review');
+		assert.equal(await run('set', 'web', 'TASK-1', 'STATUS', 'done'), 'web/TASK-1: status = done');
 		const shown = await run('show', 'web', 'task-1');
-		assert.match(shown, /\nstatus: review\nPriority: low\n\nAdd login\n/);
+		assert.match(shown, /\nstatus: done\nPriority: low\n\nAdd login\n/);
 		assert.doesNotMatch(shown, /Missing/);
 		await assert.rejects(run('set', 'web', 'TASK-1', 'Created', 'x'), /set when the task is created/);
 		await assert.rejects(run('set', 'web', 'TASK-1', 'name', 'x'), /part of the file name/);
@@ -301,50 +301,50 @@ describe('task command', () => {
 	});
 });
 
-describe('task form', () => {
-	type Press = {button: string; edit?: (values: FormValue[]) => FormValue[]};
-	// Drives the form without a terminal: the mounted element is core's Form, whose props are pressed directly.
-	const formRun = async (args: string[], presses: Press[], opts: {runLine?: (line: string) => boolean} = {}) => {
-		const printed: string[] = [];
-		const lines: string[] = [];
-		const errors: (string | undefined)[] = [];
-		const titles: string[] = [];
-		const seen: FormValue[][] = [];
-		const ctx: CommandContext = {
-			print: t => void printed.push(t),
-			clear() {},
-			exit() {},
-			mount: async (build, options) => {
-				assert.equal(options?.target, 'panel');
-				let closed = false;
-				const host = {runLine: opts.runLine ?? ((line: string) => (lines.push(line), true))};
-				const el = build({close: () => void (closed = true), host: host as never}) as {props: Record<string, unknown>};
-				if (typeof el.props.onPick === 'function') {
-					(el.props.close as () => void)();
-					(el.props.onPick as (id: string) => void)((el.props.items as {id: string}[])[1]!.id);
-					return;
+type Press = {button: string; edit?: (values: FormValue[]) => FormValue[]};
+// Drives the form without a terminal: the mounted element is core's Form, whose props are pressed directly.
+const formRun = async (args: string[], presses: Press[], opts: {runLine?: (line: string) => boolean} = {}) => {
+	const printed: string[] = [];
+	const lines: string[] = [];
+	const errors: (string | undefined)[] = [];
+	const titles: string[] = [];
+	const seen: FormValue[][] = [];
+	const ctx: CommandContext = {
+		print: t => void printed.push(t),
+		clear() {},
+		exit() {},
+		mount: async (build, options) => {
+			assert.equal(options?.target, 'panel');
+			let closed = false;
+			const host = {runLine: opts.runLine ?? ((line: string) => (lines.push(line), true))};
+			const el = build({close: () => void (closed = true), host: host as never}) as {props: Record<string, unknown>};
+			if (typeof el.props.onPick === 'function') {
+				(el.props.close as () => void)();
+				(el.props.onPick as (id: string) => void)((el.props.items as {id: string}[])[1]!.id);
+				return;
+			}
+			const props = el.props as {title: string; fields: FormField[]; onButton: (id: string, v: FormValue[]) => string | undefined};
+			titles.push(props.title);
+			let values: FormValue[] = props.fields.map(f => ({id: f.id, label: f.label, value: f.value}));
+			seen.push(values);
+			for (const p of presses) {
+				if (closed) break;
+				if (p.edit) values = p.edit(values);
+				try {
+					errors.push(props.onButton(p.button, values));
+				} catch (error) {
+					errors.push((error as Error).message);
 				}
-				const props = el.props as {title: string; fields: FormField[]; onButton: (id: string, v: FormValue[]) => string | undefined};
-				titles.push(props.title);
-				let values: FormValue[] = props.fields.map(f => ({id: f.id, label: f.label, value: f.value}));
-				seen.push(values);
-				for (const p of presses) {
-					if (closed) break;
-					if (p.edit) values = p.edit(values);
-					try {
-						errors.push(props.onButton(p.button, values));
-					} catch (error) {
-						errors.push((error as Error).message);
-					}
-				}
-			},
-		};
-		await command.run(args, ctx);
-		return {printed, lines, errors, titles, seen};
+			}
+		},
 	};
-	const setValue = (id: string, value: string) => (values: FormValue[]) => values.map(v => (v.id === id ? {...v, value} : v));
-	const addField = (key: string, value: string) => (values: FormValue[]) => [...values, {id: `added:${values.length}`, label: key, value}];
+	await command.run(args, ctx);
+	return {printed, lines, errors, titles, seen};
+};
+const setValue = (id: string, value: string) => (values: FormValue[]) => values.map(v => (v.id === id ? {...v, value} : v));
+const addField = (key: string, value: string) => (values: FormValue[]) => [...values, {id: `added:${values.length}`, label: key, value}];
 
+describe('task form', () => {
 	it('new: fills a task, shows the save error, then saves and discusses it in the chat', async () => {
 		isolate('web');
 		const r = await formRun(
@@ -357,12 +357,12 @@ describe('task form', () => {
 		assert.deepEqual(r.titles, ['New task · web']);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.id}=${v.value}`),
-			['project=web', 'id=TASK-3', 'name=', 'status=new', 'description='],
+			['project=web', 'id=TASK-3', 'name=', 'status=todo', 'description='],
 		);
 		assert.match(r.errors[0]!, /The description must not be empty/);
 		const file = path.join(md, 'web', 'tasks', 'TASK-3_ship-the-task-form.md');
 		assert.deepEqual(r.printed, [`Created web/TASK-3: ${file}`]);
-		assert.equal(readFileSync(file, 'utf8'), '---\nname: Ship the task form\nproject: web\ncreated: 2026-10-23\nstatus: new\nPriority: high\n---\n\nShip the task form\n');
+		assert.equal(readFileSync(file, 'utf8'), '---\nname: Ship the task form\nproject: web\ncreated: 2026-10-23\nstatus: todo\nPriority: high\n---\n\nShip the task form\n');
 		assert.equal(r.lines.length, 1);
 		assert.match(r.lines[0]!, /^claude send Let's discuss task web\/TASK-3 \(\S+TASK-3_ship-the-task-form\.md\)\./);
 	});
@@ -396,7 +396,7 @@ describe('task form', () => {
 		assert.deepEqual(r.titles, ['Edit task · web/TASK-3']);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.label}=${v.value}`),
-			['Project=web', 'ID=TASK-3', 'Status=new', 'Description=Ship the task form', 'Priority=high'],
+			['Project=web', 'ID=TASK-3', 'Status=todo', 'Description=Ship the task form', 'Priority=high'],
 		);
 		assert.match(r.errors[0]!, /one kebab-case word/);
 		assert.deepEqual(r.printed, [`Saved web/TASK-3: ${file}`]);
@@ -411,12 +411,12 @@ describe('task form', () => {
 		const file = path.join(md, 'web', 'tasks', 'TASK-3_ship-the-task-form.md');
 		const before = '---\nname: Ship the task form\nstatus: new\ntags:\n  - ui\ndue date: friday\n---\n\nShip the form.\n\n## Plan\n\nStep one.\n';
 		writeFileSync(file, before);
-		const r = await formRun(['edit', 'web', 'TASK-3'], [{button: 'save', edit: setValue('status', 'review')}]);
+		const r = await formRun(['edit', 'web', 'TASK-3'], [{button: 'save', edit: setValue('status', 'done')}]);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.label}=${v.value}`),
 			['Project=web', 'ID=TASK-3', 'Status=new', 'Description=Ship the form. (5 lines: edit the file)'],
 		);
-		assert.equal(readFileSync(file, 'utf8'), before.replace('status: new', 'status: review'));
+		assert.equal(readFileSync(file, 'utf8'), before.replace('status: new', 'status: done'));
 	});
 
 	it('the form refuses built-in and repeated field names', async () => {
@@ -437,11 +437,11 @@ describe('task form', () => {
 describe('task names with spaces', () => {
 	it('keeps the name in the properties and its kebab-case form in the file name', async () => {
 		isolate('names');
-		const file = await run('new', 'names', '--name', '"Fix', 'Login', 'bug"', '--status', 'review', 'The', 'login', 'fails');
+		const file = await run('new', 'names', '--name', '"Fix', 'Login', 'bug"', '--status', 'done', 'The', 'login', 'fails');
 		assert.equal(file, path.join(md, 'names', 'tasks', 'TASK-1_fix-login-bug.md'));
-		assert.equal(readFileSync(file, 'utf8'), '---\nname: Fix Login bug\nproject: names\ncreated: 2026-10-23\nstatus: review\n---\n\nThe login fails\n');
+		assert.equal(readFileSync(file, 'utf8'), '---\nname: Fix Login bug\nproject: names\ncreated: 2026-10-23\nstatus: done\n---\n\nThe login fails\n');
 		assert.match(await run('show', 'names', 'TASK-1'), /^names\/TASK-1  Fix Login bug\n/);
-		assert.match(await run('search', 'login'), /names\/TASK-1  Fix Login bug  \[review\]  \(score/);
+		assert.match(await run('search', 'login'), /names\/TASK-1  Fix Login bug  \[done\]  \(score/);
 		assert.equal(await run('new', 'names', '--name', 'Single', 'x'), path.join(md, 'names', 'tasks', 'TASK-2_single.md'));
 		assert.equal(await run('new', 'names', '--name', '"Quoted"', 'x'), path.join(md, 'names', 'tasks', 'TASK-3_quoted.md'));
 	});
@@ -465,7 +465,7 @@ describe('archived tasks', () => {
 		await run('new', 'arch', 'Open', 'work');
 		await run('new', 'arch', '--status', 'archived', 'Old', 'work', 'on', 'caching');
 		const open = await run('list', 'arch');
-		assert.match(open, /^arch\/TASK-1 +new +Open work/m);
+		assert.match(open, /^arch\/TASK-1 +todo +Open work/m);
 		assert.doesNotMatch(open, /TASK-2/);
 		assert.match(open, /^1 archived hidden \(task list arch --all\)$/m);
 		const all = await run('list', 'arch', '--all');
@@ -480,10 +480,72 @@ describe('archived tasks', () => {
 	it('search finds archived tasks, filters by status and shows the matching lines', async () => {
 		const out = await run('search', '--project', 'arch', 'cachng');
 		assert.match(out, /^Tasks matching cachng \(1 of \d+ tasks, best first\):\n1\. arch\/TASK-2  Old work on caching  \[archived\]  \(score [\d.]+\)\n {3}\S+TASK-2_old-work-on-caching\.md\n {3}Old work on caching$/);
-		assert.match(await run('search', '--status', 'new', 'caching'), /^No tasks match caching among \d+ tasks with status new\.$/);
+		assert.match(await run('search', '--status', 'todo', 'caching'), /^No tasks match caching among \d+ tasks with status todo\.$/);
 		assert.match(await run('search', 'arch/task-1'), /^1\. arch\/TASK-1 /m);
 		await assert.rejects(run('search', '--limit', '0', 'x'), /--limit is a number from 1 to 50/);
 		await assert.rejects(run('search', '--status', 'Bad!', 'x'), /one kebab-case word/);
 		await assert.rejects(run('search', '--color', 'x'), /Unknown option --color/);
+	});
+});
+
+describe('project statuses', () => {
+	it('uses the default list until the project sets its own; archived is always allowed', async () => {
+		isolate('flow');
+		assert.equal(await run('statuses', 'flow'), 'Statuses of flow (the default; set its own with "task set-statuses <project> <status…>"): todo, in-progress, done, archived');
+		const file = await run('new', 'flow', 'First', 'task');
+		assert.match(readFileSync(file, 'utf8'), /\nstatus: todo\n/);
+		await assert.rejects(run('new', 'flow', '--status', 'review', 'x'), /review is not a status of flow; use one of: todo, in-progress, done, archived/);
+		await assert.rejects(run('status', 'flow', 'TASK-1', 'review'), /not a status of flow/);
+		await assert.rejects(run('set', 'flow', 'TASK-1', 'status', 'blocked'), /not a status of flow/);
+		assert.equal(await run('status', 'flow', 'TASK-1', 'archived'), 'flow/TASK-1: todo -> archived');
+	});
+
+	it('sets the list in an isolated project, reports tasks outside it and refuses a bad list', async () => {
+		isolate();
+		await assert.rejects(run('set-statuses', 'flow', 'new', 'done'), /flow is not isolated/);
+		isolate('flow');
+		await run('status', 'flow', 'TASK-1', 'in-progress');
+		assert.equal(
+			await run('set-statuses', 'flow', 'new', 'review', 'done'),
+			'Statuses of flow: todo, in-progress, done, archived -> new, review, done, archived\n1 task has a status outside the list: flow/TASK-1 (in-progress)',
+		);
+		const listFile = path.join(md, 'flow', 'tasks', 'statuses.md');
+		assert.equal(readFileSync(listFile, 'utf8'), '# Task statuses of flow\n\nOne per list item, in order; a new task gets the first. archived is always allowed.\n\n- new\n- review\n- done\n');
+		assert.match(await run('statuses', 'flow'), /^Statuses of flow \(\S+statuses\.md\): new, review, done, archived$/);
+		assert.match(readFileSync(await run('new', 'flow', 'Second'), 'utf8'), /\nstatus: new\n/);
+		assert.equal(await run('status', 'flow', 'TASK-1'), 'flow/TASK-1: in-progress (not a status of flow (new, review, done, archived))');
+		assert.match(await run('show', 'flow', 'TASK-1'), /\nStatus in-progress is not a status of flow \(new, review, done, archived\); set one with/);
+		assert.deepEqual(listTasks(md, 'flow').map(t => t.id), ['TASK-1', 'TASK-2'], 'the list file is not a task');
+		await assert.rejects(run('set-statuses', 'flow', 'a', 'a'), /a is in the list twice/);
+		await assert.rejects(run('set-statuses', 'flow', 'archived'), /needs a status besides archived/);
+		await assert.rejects(run('set-statuses', 'flow', 'Bad!'), /one kebab-case word/);
+		await assert.rejects(run('set-statuses', 'flow'), /Usage: task set-statuses/);
+	});
+
+	it('reads a hand-edited list and names the file when it is broken', async () => {
+		const listFile = path.join(md, 'flow', 'tasks', 'statuses.md');
+		writeFileSync(listFile, '# Ours\n\nSome notes.\n\n* backlog\n+ doing\n- shipped\n');
+		assert.match(await run('statuses', 'flow'), /: backlog, doing, shipped, archived$/);
+		writeFileSync(listFile, '- Not ok\n');
+		await assert.rejects(run('status', 'flow', 'TASK-1', 'done'), /statuses\.md: The status is one kebab-case word.*task set-statuses flow/);
+		writeFileSync(listFile, 'no items\n');
+		await assert.rejects(run('statuses', 'flow'), /needs a status besides archived/);
+		rmSync(listFile);
+	});
+
+	it('the form keeps a status the list dropped but refuses a new one outside it', async () => {
+		isolate('flow');
+		const r = await formRun(['edit', 'flow', 'TASK-1'], [{button: 'save', edit: setValue('description', 'Changed')}]);
+		assert.deepEqual(r.errors, [undefined]);
+		assert.match(readFileSync(listTasks(md, 'flow')[0]!.file, 'utf8'), /\nstatus: in-progress\n[\s\S]*\nChanged\n$/);
+		await run('set-statuses', 'flow', 'todo', 'done');
+		const bad = await formRun(['edit', 'flow', 'TASK-2'], [{button: 'save', edit: setValue('status', 'review')}, {button: 'cancel'}]);
+		assert.match(bad.errors.join('\n'), /review is not a status of flow/);
+	});
+
+	it('help names the statuses commands and the assistant may not change the list unasked', async () => {
+		assert.match(await run('help'), /task set-statuses <project> <status…>/);
+		assert.equal(command.subcommands?.find(s => s.name === 'set-statuses')?.agent, 'confirm');
+		assert.equal(command.subcommands?.find(s => s.name === 'statuses')?.agent, 'safe');
 	});
 });

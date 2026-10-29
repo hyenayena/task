@@ -14,6 +14,8 @@ export type TaskFormSpec = {
 	// A new task: its number and file name can still be chosen.
 	isNew: boolean;
 	status: string;
+	// Shown dim in the emptied status field: the statuses the project allows.
+	statusHint?: string;
 	description: string;
 	// The description has more lines than the one-line field holds: shown, not edited.
 	descriptionReadOnly?: boolean;
@@ -51,7 +53,7 @@ export function taskForm(control: MountControl, spec: TaskFormSpec): UiElement {
 		{id: 'project', label: 'Project', value: spec.project, readOnly: true},
 		{id: 'id', label: 'ID', value: spec.id, ...(!spec.isNew && {readOnly: true})},
 		...(spec.isNew ? [{id: 'name', label: 'Name', value: '', placeholder: spec.namePlaceholder ?? 'spaces allowed; the file name is its kebab-case form'}] : []),
-		{id: 'status', label: 'Status', value: spec.status},
+		{id: 'status', label: 'Status', value: spec.status, ...(spec.statusHint !== undefined && {placeholder: spec.statusHint})},
 		{id: 'description', label: 'Description', value: spec.description, placeholder: 'what the task is about (required)', ...(spec.descriptionReadOnly && {readOnly: true})},
 		...spec.fields.map((f, i) => ({id: `${EXTRA}${i}`, label: f.key, value: f.value})),
 	];

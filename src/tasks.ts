@@ -1,4 +1,4 @@
-import {closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, constants} from 'node:fs';
+import {closeSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, constants} from 'node:fs';
 import path from 'node:path';
 import {isProjectName} from './deps/project.js';
 import {bodyOf, type Field, fieldOf, fieldsOf, render, withBody, withField, withoutField} from './frontmatter.js';
@@ -14,13 +14,16 @@ const NAME_MAX = 80;
 const FILE_RE = /^([A-Za-z0-9][A-Za-z0-9-]{0,31})_([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const AUTO_RE = new RegExp(`^${AUTO_PREFIX}-([0-9]{1,9})$`);
 const READ_MAX = 256 * 1024;
-// One kebab-case word: new, in-progress, review, done, blocked, cancelled… (any such word is accepted).
+// One kebab-case word: todo, in-progress, review, done…
 const STATUS_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STATUS_MAX = 32;
-export const DEFAULT_STATUS = 'new';
-/** `task list` hides tasks with this status; `task list --all` and `task search` still show them. */
+const STATUSES_MAX = 20;
+/** `task list` hides tasks with this status; `task list --all` and `task search` still show them. Allowed in every project. */
 export const ARCHIVED_STATUS = 'archived';
-export const SUGGESTED_STATUSES = ['new', 'in-progress', 'review', 'done', 'blocked', 'cancelled', ARCHIVED_STATUS];
+/** The statuses of a project without its own list. */
+export const DEFAULT_STATUSES = ['todo', 'in-progress', 'done'];
+/** A project's own list, in its tasks folder; the name has no "_", so it is never taken for a task. */
+export const STATUSES_FILE = 'statuses.md';
 
 export type Task = {project: string; id: string; name: string; file: string};
 
@@ -95,7 +98,7 @@ export function template(p: {project: string; title: string; date: string; descr
 			{key: 'name', value: p.title},
 			{key: 'project', value: p.project},
 			{key: 'created', value: p.date},
-			{key: 'status', value: p.status ?? DEFAULT_STATUS},
+			{key: 'status', value: p.status ?? (DEFAULT_STATUSES[0] as string)},
 			...(p.fields ?? []),
 		],
 		p.description,
@@ -131,9 +134,83 @@ export function readTask(file: string): string | undefined {
 
 export function checkStatus(v: string | undefined): string {
 	if (v === undefined || v.length > STATUS_MAX || !STATUS_RE.test(v)) {
-		throw new Error(`The status is one kebab-case word, e.g. ${SUGGESTED_STATUSES.join(', ')}`);
+		throw new Error(`The status is one kebab-case word, e.g. ${[...DEFAULT_STATUSES, ARCHIVED_STATUS].join(', ')}`);
 	}
 	return v;
+}
+
+/** The statuses a project's tasks may have: its list (its own or the default) and archived. */
+export type Statuses = {list: string[]; own: boolean};
+
+export const allowedStatuses = (s: Statuses): string[] => (s.list.includes(ARCHIVED_STATUS) ? s.list : [...s.list, ARCHIVED_STATUS]);
+
+export const isAllowedStatus = (s: Statuses, status: string): boolean => allowedStatuses(s).includes(status);
+
+/** The status of a new task: the first of the list that is not archived. */
+export const firstStatus = (s: Statuses): string => s.list.find(x => x !== ARCHIVED_STATUS) as string;
+
+/** A list to keep: kebab-case words, no repeats, at least one besides archived. */
+export function checkStatuses(values: string[]): string[] {
+	const list = values.map(v => checkStatus(v));
+	const repeated = list.find((v, i) => list.indexOf(v) !== i);
+	if (repeated !== undefined) throw new Error(`${repeated} is in the list twice`);
+	if (list.length > STATUSES_MAX) throw new Error(`A project has at most ${STATUSES_MAX} statuses`);
+	if (!list.some(v => v !== ARCHIVED_STATUS)) throw new Error(`The list needs a status besides ${ARCHIVED_STATUS}`);
+	return list;
+}
+
+export const statusesFile = (md: string, project: string): string => path.join(tasksDir(md, project), STATUSES_FILE);
+
+const STATUS_ITEM_RE = /^[-*+]\s+(\S.*?)\s*$/;
+
+/** The list items ("- todo") of a statuses file; headings and other lines are notes for people. */
+export function parseStatuses(text: string): string[] {
+	const items = text.split('\n').flatMap(line => {
+		const m = STATUS_ITEM_RE.exec(line.trim());
+		return m ? [(m[1] as string).slice(0, 64)] : [];
+	});
+	return checkStatuses(items);
+}
+
+export const renderStatuses = (project: string, list: string[]): string =>
+	[
+		`# Task statuses of ${project}`,
+		'',
+		`One per list item, in order; a new task gets the first. ${ARCHIVED_STATUS} is always allowed.`,
+		'',
+		...list.map(s => `- ${s}`),
+		'',
+	].join('\n');
+
+/** The project's own list, or the default when it has none. */
+export function readStatuses(md: string, project: string): Statuses {
+	const file = statusesFile(md, project);
+	try {
+		lstatSync(file);
+	} catch {
+		return {list: DEFAULT_STATUSES, own: false};
+	}
+	const text = readTask(file);
+	if (text === undefined) throw new Error(`Cannot read ${file}`);
+	try {
+		return {list: parseStatuses(text), own: true};
+	} catch (error) {
+		throw new Error(`${file}: ${(error as Error).message} (fix the file or run "task set-statuses ${project} <status…>")`);
+	}
+}
+
+export function writeStatuses(md: string, project: string, list: string[]): void {
+	mkdirSync(tasksDir(md, project), {recursive: true});
+	const file = statusesFile(md, project);
+	let mode = 0o644;
+	try {
+		const st = lstatSync(file);
+		if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+		mode = st.mode & 0o777;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+	}
+	replaceFile(file, renderStatuses(project, list), mode);
 }
 
 export const statusOf = (text: string): string | undefined => fieldOf(text, 'status');
@@ -158,9 +235,13 @@ export function rewriteTask(file: string, change: (text: string) => string): voi
 	if (st.size > READ_MAX) throw new Error(`${file} is larger than ${READ_MAX / 1024} KiB`);
 	const text = readTask(file);
 	if (text === undefined) throw new Error(`Cannot read ${file}`);
+	replaceFile(file, change(text), st.mode & 0o777);
+}
+
+function replaceFile(file: string, text: string, mode: number): void {
 	const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
 	try {
-		writeFileSync(tmp, change(text), {flag: 'wx', mode: st.mode & 0o777});
+		writeFileSync(tmp, text, {flag: 'wx', mode});
 		renameSync(tmp, file);
 	} catch (error) {
 		rmSync(tmp, {force: true});
