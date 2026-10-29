@@ -290,7 +290,10 @@ describe('task command', () => {
 	});
 
 	it('help, unknown subcommands and the plugin', async () => {
-		assert.match(await run(), /^Usage:\n {2}task list/);
+		assert.equal(await run(), 'task <subcommand>');
+		let shown = 0;
+		await command.run(['help'], {print() {}, clear() {}, exit() {}, showHelp: () => void shown++});
+		assert.equal(shown, 1);
 		await assert.rejects(run('nope'), /Unknown subcommand: nope/);
 		assert.equal(depsFor('/data/task').md, '/data/md/projects');
 		assert.deepEqual(depsFor(path.join(tmp, 'nowhere', 'task')).isolated(), [], 'no project state: nothing isolated');
@@ -543,9 +546,14 @@ describe('project statuses', () => {
 		assert.match(bad.errors.join('\n'), /review is not a status of flow/);
 	});
 
-	it('help names the statuses commands and the assistant may not change the list unasked', async () => {
-		assert.match(await run('help'), /task set-statuses <project> <status…>/);
+	it('the statuses commands are documented and the assistant may not change the list unasked', () => {
+		assert.equal(command.subcommands?.find(s => s.name === 'set-statuses')?.usage, 'task set-statuses <project> <status…>');
 		assert.equal(command.subcommands?.find(s => s.name === 'set-statuses')?.agent, 'confirm');
 		assert.equal(command.subcommands?.find(s => s.name === 'statuses')?.agent, 'safe');
+		assert.deepEqual(Object.fromEntries((command.subcommands ?? []).map(s => [s.name, s.agent])), {
+			list: 'safe', new: 'safe', show: 'safe', edit: 'deny', set: 'safe', unset: 'safe', status: 'safe',
+			statuses: 'safe', 'set-statuses': 'confirm', delete: 'confirm', search: 'safe',
+		});
+		assert.equal(command.agent, 'safe');
 	});
 });

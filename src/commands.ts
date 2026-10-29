@@ -1,6 +1,6 @@
 import {lstatSync, mkdirSync, rmSync} from 'node:fs';
 import path from 'node:path';
-import type {Command, CommandContext, Logger} from '../../../src/api.js';
+import type {Command, CommandContext, Logger, Subcommand} from '../../../src/api.js';
 import {noopLog} from './log.js';
 import {rank} from './search.js';
 import {
@@ -56,8 +56,8 @@ export type TaskDeps = {
 	now?: () => Date;
 };
 
-const NEW_USAGE = 'task new [<project>] [--id <id>] [--name <name>] [--status <status>] [<description…>]';
-const STATUS_USAGE = 'task status <project> <id> [<status>]';
+const NEW_USAGE = 'task new [project] [--id <id>] [--name <name>] [--status <status>] [description…]';
+const STATUS_USAGE = 'task status <project> <id> [status]';
 const STATUSES_USAGE = 'task statuses <project>';
 const SET_STATUSES_USAGE = 'task set-statuses <project> <status…>';
 const SHOW_USAGE = 'task show <project> <id>';
@@ -65,42 +65,107 @@ const EDIT_USAGE = 'task edit <project> <id>';
 const SET_USAGE = 'task set <project> <id> <field> <value…>';
 const UNSET_USAGE = 'task unset <project> <id> <field>';
 const DELETE_USAGE = 'task delete <project> <id>';
-const LIST_USAGE = 'task list [<project>] [--all]';
-const SEARCH_USAGE = 'task search [--project <p>] [--status <s>] [--limit <n>] <id | words | "phrase">…';
-const USAGE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
+const LIST_USAGE = 'task list [project] [--all]';
+const SEARCH_USAGE = 'task search [--project <project>] [--status <status>] [--limit <n>] <query>…';
+// The one-line form in usage errors.
+const LINE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
+const USAGE = 'task <subcommand>';
 const SEARCH_FILES_MAX = 5000;
 const SEARCH_LIMIT = 10;
 const SEARCH_LIMIT_MAX = 50;
 const LIST_TEXT_MAX = 60;
 
-const HELP = [
-	'Usage:',
-	`  ${LIST_USAGE.padEnd(44)}List tasks, of every project or of one;`,
-	`  ${''.padEnd(44)}archived ones (status ${ARCHIVED_STATUS}) only with --all`,
-	`  ${NEW_USAGE}`,
-	'                                              With a description: create the task (the id defaults to the next',
-	'                                              TASK-<n>, the name to the first words of the description).',
-	'                                              A name with spaces goes in quotes: --name "Fix login bug";',
-	'                                              the file name is its kebab-case form (fix-login-bug).',
-	'                                              Without one, in the app: open a form to fill it',
-	`  ${SHOW_USAGE.padEnd(44)}Show the task's fields and file`,
-	`  ${EDIT_USAGE.padEnd(44)}Edit the task in a form (in the app)`,
-	`  ${SET_USAGE.padEnd(44)}Set a field: status, description or any other`,
-	`  ${UNSET_USAGE.padEnd(44)}Remove a field you added (status and description are required)`,
-	`  ${STATUS_USAGE.padEnd(44)}Show the status, or set it to one of the project's statuses`,
-	`  ${STATUSES_USAGE.padEnd(44)}The statuses a task of the project may have`,
-	`  ${SET_STATUSES_USAGE.padEnd(44)}Set the project's own list, in order; a new task gets the first`,
-	`  ${''.padEnd(44)}(default: ${DEFAULT_STATUSES.join(', ')}; ${ARCHIVED_STATUS} is always allowed)`,
-	`  ${DELETE_USAGE.padEnd(44)}Delete the task file`,
-	`  ${SEARCH_USAGE}`,
-	'                                              Find tasks in every project (archived too): by id (web/TASK-1,',
-	'                                              TASK-1 or 1), by words in the name and text (word forms and',
-	'                                              typos count less), "quoted phrases" must appear; --project',
-	'                                              puts that project first. Shows the matching lines (L<n>)',
-	'Every task has an id (unique in its project), a status and a description. The file starts with its',
-	'properties ("key: value" lines between "---" lines, as in Obsidian); the description is the Markdown after them.',
-	'Tasks are created and changed only in isolated projects ("project isolate <name>").',
-].join('\n');
+const PROJECT = {name: 'project', description: 'A project in the docs hub'};
+const ID = {name: 'id', description: 'The task id (TASK-1); case does not matter'};
+
+const SUBCOMMANDS: Subcommand[] = [
+	{
+		name: 'list',
+		aliases: ['ls'],
+		usage: LIST_USAGE,
+		description: 'List tasks, of every project or of one',
+		args: [{name: 'project', description: 'Only the tasks of this project'}],
+		options: [{name: '--all', description: `Also the archived ones (status ${ARCHIVED_STATUS})`}],
+		agent: 'safe',
+	},
+	{
+		name: 'new',
+		usage: NEW_USAGE,
+		description: 'Create a task (without a description: fill it in a form)',
+		args: [
+			{name: 'project', description: 'The project; required with a description'},
+			{name: 'description', description: 'The text of the task: the rest of the line'},
+		],
+		options: [
+			{name: '--id', value: '<id>', description: 'The id (default: the next TASK-<n>)'},
+			{name: '--name', value: '<name>', description: 'The name (default: the first words of the description)'},
+			{name: '--status', value: '<status>', description: "One of the project's statuses (default: the first)"},
+		],
+		notes: [
+			'A name with spaces goes in quotes: --name "Fix login bug"; the file name is its kebab-case form (fix-login-bug)',
+			'Without a description, in the app: opens a form to fill it',
+		],
+		agent: 'safe',
+	},
+	{name: 'show', usage: SHOW_USAGE, description: "Show a task's fields and file", args: [PROJECT, ID], agent: 'safe'},
+	{name: 'edit', usage: EDIT_USAGE, description: 'Edit a task in a form (in the app)', args: [PROJECT, ID], agent: 'deny'},
+	{
+		name: 'set',
+		usage: SET_USAGE,
+		description: 'Set a field of a task: status, description or any other',
+		args: [PROJECT, ID, {name: 'field', description: 'The field name'}, {name: 'value', description: 'The value: the rest of the line'}],
+		agent: 'safe',
+	},
+	{
+		name: 'unset',
+		usage: UNSET_USAGE,
+		description: 'Remove a field you added (status and description are required)',
+		args: [PROJECT, ID, {name: 'field', description: 'The field name'}],
+		agent: 'safe',
+	},
+	{
+		name: 'status',
+		usage: STATUS_USAGE,
+		description: "Show the status of a task, or set it to one of the project's statuses",
+		args: [PROJECT, ID, {name: 'status', description: 'The new status'}],
+		agent: 'safe',
+	},
+	{name: 'statuses', usage: STATUSES_USAGE, description: 'The statuses a task of the project may have', args: [PROJECT], agent: 'safe'},
+	// The list is the user's rule for the assistant, so the assistant does not change it unasked.
+	{
+		name: 'set-statuses',
+		usage: SET_STATUSES_USAGE,
+		description: "Set the project's own list of statuses, in order",
+		args: [PROJECT, {name: 'status', description: 'A status; a new task gets the first'}],
+		notes: [`Default: ${DEFAULT_STATUSES.join(', ')}; ${ARCHIVED_STATUS} is always allowed`],
+		agent: 'confirm',
+	},
+	{name: 'delete', aliases: ['rm'], usage: DELETE_USAGE, description: 'Delete a task file', args: [PROJECT, ID], agent: 'confirm'},
+	{
+		name: 'search',
+		usage: SEARCH_USAGE,
+		description: 'Find tasks in every project (archived too) by id, name or text',
+		args: [{name: 'query', description: 'An id, words, or a "quoted phrase"'}],
+		options: [
+			{name: '--project', value: '<project>', description: 'Put the tasks of this project first'},
+			{name: '--status', value: '<status>', description: 'Only tasks with this status'},
+			{name: '--limit', value: '<n>', description: `At most this many results (default ${SEARCH_LIMIT}, up to ${SEARCH_LIMIT_MAX})`},
+		],
+		notes: [
+			'By id: web/TASK-1, TASK-1 or 1',
+			'Words match the name and text; word forms and typos count less; "quoted phrases" must appear',
+			'Shows the matching lines (L<n>)',
+		],
+		agent: 'safe',
+	},
+];
+
+const NOTES = [
+	'Every task has an id (unique in its project), a status and a description',
+	'The file starts with its properties ("key: value" lines between "---" lines, as in Obsidian)',
+	'The description is the Markdown after them',
+	'Tasks are created and changed only in isolated projects ("project isolate <name>")',
+];
 
 const label = (t: Task): string => `${t.project}/${t.id}`;
 
@@ -544,29 +609,16 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		name: 'task',
 		description: 'Task files in project docs: fill and edit them, search them',
 		usage: USAGE,
+		args: [{name: 'subcommand', description: 'What to do; see the subcommands'}],
+		notes: NOTES,
 		agent: 'safe',
-		subcommands: [
-			{name: 'list', aliases: ['ls'], usage: LIST_USAGE, description: 'List tasks (archived ones with --all)', agent: 'safe'},
-			{name: 'new', usage: NEW_USAGE, description: 'Create a task (without a description: fill it in a form)', agent: 'safe'},
-			{name: 'show', usage: SHOW_USAGE, description: "Show a task's fields and file", agent: 'safe'},
-			{name: 'edit', usage: EDIT_USAGE, description: 'Edit a task in a form', agent: 'deny'},
-			{name: 'set', usage: SET_USAGE, description: 'Set a field of a task', agent: 'safe'},
-			{name: 'unset', usage: UNSET_USAGE, description: 'Remove an added field of a task', agent: 'safe'},
-			{name: 'status', usage: STATUS_USAGE, description: 'Show or set the status of a task', agent: 'safe'},
-			{name: 'statuses', usage: STATUSES_USAGE, description: "Show a project's task statuses", agent: 'safe'},
-			// The list is the user's rule for the assistant, so the assistant does not change it unasked.
-			{name: 'set-statuses', usage: SET_STATUSES_USAGE, description: "Set a project's task statuses", agent: 'confirm'},
-			{name: 'delete', aliases: ['rm'], usage: DELETE_USAGE, description: 'Delete a task file', agent: 'confirm'},
-			{name: 'search', usage: SEARCH_USAGE, description: 'Find tasks by id, name or text', agent: 'safe'},
-			{name: 'help', usage: 'task help', description: 'Show the usage', agent: 'safe'},
-		],
+		subcommands: SUBCOMMANDS,
 		async run(args, ctx) {
 			const [sub, ...rest] = args;
 			switch (sub) {
 				case undefined:
 				case 'help':
-					ctx.print(HELP);
-					return;
+					return ctx.showHelp ? ctx.showHelp() : ctx.print(USAGE);
 				case 'list':
 				case 'ls':
 					ctx.print(list(rest));
@@ -608,7 +660,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					ctx.print(search(rest));
 					return;
 				default:
-					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${USAGE}`);
+					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${LINE}`);
 			}
 		},
 	};
