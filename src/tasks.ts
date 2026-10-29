@@ -18,7 +18,9 @@ const READ_MAX = 256 * 1024;
 const STATUS_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const STATUS_MAX = 32;
 export const DEFAULT_STATUS = 'new';
-export const SUGGESTED_STATUSES = ['new', 'in-progress', 'review', 'done', 'blocked', 'cancelled'];
+/** `task list` hides tasks with this status; `task list --all` and `task search` still show them. */
+export const ARCHIVED_STATUS = 'archived';
+export const SUGGESTED_STATUSES = ['new', 'in-progress', 'review', 'done', 'blocked', 'cancelled', ARCHIVED_STATUS];
 
 export type Task = {project: string; id: string; name: string; file: string};
 

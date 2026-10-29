@@ -28,7 +28,7 @@ The login page fails after logout.
 ```
 
 - `project` and `created` are written by `task new` and cannot be changed; `name` goes with the file name and cannot be changed either.
-- `status`: one kebab-case word up to 32 characters: `new` (the default), `in-progress`, `review`, `done`, `blocked`, `cancelled`, or any other.
+- `status`: one kebab-case word up to 32 characters: `new` (the default), `in-progress`, `review`, `done`, `blocked`, `cancelled`, `archived`, or any other. An `archived` task is left out of `task list` (shown with `--all`); `task search` still finds it.
 - The description (required) is the body: one line when set by `task new`, `task set` or the form, any Markdown when the file is edited (sections such as `## Plan` or `### Conclusion` are added there by the agents when they have something to write; nothing is pre-filled).
 - Extra properties, added by the user or a model: a key that starts with a letter and holds letters, digits and `-` (up to 32, e.g. `Priority`, `Due-date`), not a built-in one (`project`, `created`, `status`, `description`, `id`, `name`), once per task (case-insensitive); the value is one line.
 - Keys are matched case-insensitively, so older files with `Status:` keep working. Values YAML would read otherwise (`a: b`, `#tag`, `yes`, …) are written in double quotes. Properties written elsewhere that the module does not edit (lists such as `tags:` with `- a` lines, keys with spaces) are shown by `show` (lists joined with `, `) and left untouched by the form; `task set` on such a key replaces it with one line.
@@ -37,7 +37,7 @@ The login page fails after logout.
 
 Writing works only in a project isolated with `project isolate` (the project module says which are); reading works everywhere. Ids and field names are matched case-insensitively. A file is changed by writing next to it and renaming over it (never through a symlink; files over 256 KiB are refused).
 
-- `task list [<project>]` lists tasks of every project or of one: label, status (`-` when there is none), the first line of the description (the name for a task without one) and path.
+- `task list [<project>] [--all]` lists tasks of every project or of one: label, status (`-` when there is none), the first line of the description (the name for a task without one) and path. Tasks with status `archived` are shown only with `--all`; otherwise the list ends with `N archived hidden (task list [<project>] --all)` (`No open tasks in <dir>; …` when nothing else is left).
 - `task new [<project>] [--id <id>] [--name <name>] [--status <status>] [<description…>]`:
   - with a description (the rest of the line; `--` ends the options) it creates the task and prints its path. No `--id`: the next `TASK-<n>` of that project. `--name` takes one word, or a name with spaces in double quotes (`--name "Fix login bug"`, since the console splits lines on whitespace); no `--name`: the first latin words of the description (up to 6 words, 50 characters), or `task`. An existing file is never overwritten.
   - without one, in the app, it opens the form (below); with no project it takes the isolated one, or asks which when several are isolated. The options fill the form. From a terminal or an assistant run a description is required.
@@ -47,7 +47,11 @@ Writing works only in a project isolated with `project isolate` (the project mod
 - `task unset <project> <id> <field>` removes an extra property; status and description are refused.
 - `task status <project> <id> [<status>]` prints the status (`web/TASK-2: in-progress`) or sets it (`new -> in-progress`). A task without a status gets one as the last property (a file without properties gets them at the top).
 - `task delete <project> <id>` (alias `rm`) deletes the task file.
-- `task search [--project <project>] <words>…` searches the tasks of every project and prints the best 10: label, title, score, path and the first line under a `Conclusion` heading (else the first text line of the description). Words in the number and name weigh 3, in headings 2, in the body 1 (each counted up to 3 times); forms of a word match by prefix (4+ letters) at half weight; the score is scaled by the share of query words found, and tasks of `--project` get ×1.5.
+- `task search [--project <p>] [--status <s>] [--limit <n>] <id | words | "phrase">…` finds tasks in every project, archived ones too, and prints the best `--limit` (default 10, at most 50): label, name, `[status]`, score, path, the first line under a `Conclusion` heading (else the first text line of the description), then up to two other body lines with the most matches as `L<n>: …` (the file line number, for a read at that line). It serves both a lookup (an id, a name, a phrase) and the search for similar past tasks before planning.
+  - Ids: a token with a `-` and a digit (`TECH-12`), a label (`web/TECH-12`) or a bare number (`12`). An exact id or label scores 100, so it comes first; a number matches the number at the end of an id (30) and also counts as a word of the text. An id or label that names no task adds nothing (no fallback to its words). Tokens such as `oauth2` are words.
+  - Words: in the id and name weigh 3, in headings 2, in the whole file 1 (each counted up to 3 times); forms of a word match by prefix (4+ letters) at ½, typos at ⅓ (edit distance 1 from 5 letters, 2 when both words have 8+; swapped neighbours count as one).
+  - `"quoted phrases"` (case and runs of spaces ignored) must appear in the name or text, else the task is left out; one in the name adds 6, in the text 3. A query of plain words found as a whole adds 4 in the name, 2 in the text.
+  - The score is scaled by the share of query parts found; tasks of `--project` get ×1.5; hits under a fifth of the best score are dropped. `--status` searches only tasks with that status. `--` ends the options.
 - `task` or `task help` prints the usage.
 
 Assistant policies: `edit` is `deny` (a form is for the user), `delete` is `confirm`, the rest `safe`. An assistant reaches all of them through the console MCP tools, so it can do everything the user does except fill the form.
@@ -68,7 +72,7 @@ Assistant policies: `edit` is `deny` (a form is for the user), `delete` is `conf
 
 ## Residual risks
 
-- Search matches words, not meaning: a similar task described with other words is missed.
+- Search matches words, not meaning: a similar task described with other words is missed. Typo tolerance can match an unrelated word one letter away (`cache` / `catch`), at a third of the weight.
 - Only the first 256 KiB of a file and at most 5000 files are searched. Symlinked files and folders are skipped.
 - The isolation check is a courtesy for the command; the hard rule for the assistant's own edits is in the claude module.
 - Console lines are split on whitespace, so a value set by command loses runs of spaces; values are one line.

@@ -29,6 +29,7 @@ import {
 	slugOf,
 	statusOf,
 	SUGGESTED_STATUSES,
+	ARCHIVED_STATUS,
 	type Task,
 	tasksDir,
 	template,
@@ -56,14 +57,18 @@ const EDIT_USAGE = 'task edit <project> <id>';
 const SET_USAGE = 'task set <project> <id> <field> <value…>';
 const UNSET_USAGE = 'task unset <project> <id> <field>';
 const DELETE_USAGE = 'task delete <project> <id>';
-const SEARCH_USAGE = 'task search [--project <project>] <words>…';
+const LIST_USAGE = 'task list [<project>] [--all]';
+const SEARCH_USAGE = 'task search [--project <p>] [--status <s>] [--limit <n>] <id | words | "phrase">…';
 const USAGE = 'task list | new | show | edit | set | unset | status | delete | search (task help for details)';
 const SEARCH_FILES_MAX = 5000;
+const SEARCH_LIMIT = 10;
+const SEARCH_LIMIT_MAX = 50;
 const LIST_TEXT_MAX = 60;
 
 const HELP = [
 	'Usage:',
-	'  task list [<project>]                       List tasks, of every project or of one',
+	`  ${LIST_USAGE.padEnd(44)}List tasks, of every project or of one;`,
+	`  ${''.padEnd(44)}archived ones (status ${ARCHIVED_STATUS}) only with --all`,
 	`  ${NEW_USAGE}`,
 	'                                              With a description: create the task (the id defaults to the next',
 	'                                              TASK-<n>, the name to the first words of the description).',
@@ -77,7 +82,11 @@ const HELP = [
 	`  ${STATUS_USAGE.padEnd(44)}Show the status, or set it (one kebab-case word:`,
 	`  ${''.padEnd(44)}${SUGGESTED_STATUSES.join(', ')}…)`,
 	`  ${DELETE_USAGE.padEnd(44)}Delete the task file`,
-	`  ${SEARCH_USAGE.padEnd(44)}Find similar tasks in every project (that project first)`,
+	`  ${SEARCH_USAGE}`,
+	'                                              Find tasks in every project (archived too): by id (web/TASK-1,',
+	'                                              TASK-1 or 1), by words in the name and text (word forms and',
+	'                                              typos count less), "quoted phrases" must appear; --project',
+	'                                              puts that project first. Shows the matching lines (L<n>)',
 	'Every task has an id (unique in its project), a status and a description. The file starts with its',
 	'properties ("key: value" lines between "---" lines, as in Obsidian); the description is the Markdown after them.',
 	'Tasks are created and changed only in isolated projects ("project isolate <name>").',
@@ -180,13 +189,22 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return {status: statusOf(text) || '-', text: cut(firstLineOf(descriptionOf(text)) || nameOf(t, text), LIST_TEXT_MAX)};
 	};
 
-	const list = (project?: string): string => {
-		const tasks = listTasks(deps.md, project);
-		if (tasks.length === 0) return project === undefined ? `No tasks in ${deps.md}` : `No tasks in ${tasksDir(deps.md, project)}`;
-		const width = Math.max(...tasks.map(t => label(t).length));
-		const rows = tasks.map(info);
-		const sw = Math.max(...rows.map(r => r.status.length));
-		return tasks.map((t, i) => `${label(t).padEnd(width)}  ${rows[i]!.status.padEnd(sw)}  ${rows[i]!.text}  ${t.file}`).join('\n');
+	const list = (args: string[]): string => {
+		const all = args.includes('--all');
+		const rest = args.filter(a => a !== '--all');
+		if (rest.length > 1 || rest.some(a => a.startsWith('--'))) throw new Error(`Usage: ${LIST_USAGE}`);
+		const project = rest[0] === undefined ? undefined : checkProject(rest[0]);
+		const where = project === undefined ? deps.md : tasksDir(deps.md, project);
+		const found = listTasks(deps.md, project).map(t => ({task: t, ...info(t)}));
+		if (found.length === 0) return `No tasks in ${where}`;
+		const shown = all ? found : found.filter(r => r.status !== ARCHIVED_STATUS);
+		const hidden = found.length - shown.length;
+		const note = hidden > 0 ? `${hidden} archived hidden (task list${project === undefined ? '' : ` ${project}`} --all)` : '';
+		if (shown.length === 0) return `No open tasks in ${where}; ${note}`;
+		const width = Math.max(...shown.map(r => label(r.task).length));
+		const sw = Math.max(...shown.map(r => r.status.length));
+		const rows = shown.map(r => `${label(r.task).padEnd(width)}  ${r.status.padEnd(sw)}  ${r.text}  ${r.task.file}`);
+		return [...rows, ...(note === '' ? [] : [note])].join('\n');
 	};
 
 	const requireIsolated = (project: string) => {
@@ -325,26 +343,46 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	const search = (args: string[]): string => {
 		let project: string | undefined;
+		let wanted: string | undefined;
+		let limit = SEARCH_LIMIT;
 		const rest: string[] = [];
 		for (let i = 0; i < args.length; i++) {
-			if (args[i] === '--project') {
-				project = checkProject(args[++i]);
-			} else rest.push(args[i] as string);
+			const arg = args[i] as string;
+			if (arg === '--') {
+				rest.push(...args.slice(i + 1));
+				break;
+			}
+			if (arg === '--project') project = checkProject(args[++i]);
+			else if (arg === '--status') wanted = checkStatus(args[++i]);
+			else if (arg === '--limit') {
+				const n = Number(args[++i]);
+				if (!Number.isInteger(n) || n < 1 || n > SEARCH_LIMIT_MAX) throw new Error(`--limit is a number from 1 to ${SEARCH_LIMIT_MAX}`);
+				limit = n;
+			} else if (arg.startsWith('--')) throw new Error(`Unknown option ${arg.slice(0, 32)}. Usage: ${SEARCH_USAGE}`);
+			else rest.push(arg);
 		}
 		if (rest.length === 0) throw new Error(`Usage: ${SEARCH_USAGE}`);
-		const tasks = listTasks(deps.md).slice(0, SEARCH_FILES_MAX);
-		const texts = tasks.flatMap(task => {
-			const text = readTask(task.file);
-			return text === undefined ? [] : [{task, text}];
-		});
-		const hits = rank(texts, rest.join(' '), project);
+		const query = rest.join(' ');
+		const texts = listTasks(deps.md)
+			.slice(0, SEARCH_FILES_MAX)
+			.flatMap(task => {
+				const text = readTask(task.file);
+				return text === undefined ? [] : [{task, text}];
+			})
+			.filter(t => wanted === undefined || statusOf(t.text) === wanted);
+		const hits = rank(texts, query, {...(project !== undefined && {project}), limit});
 		log.info('task search', {tasks: texts.length, hits: hits.length});
-		if (hits.length === 0) return `No similar tasks among ${texts.length}.`;
-		const lines = [`Similar tasks (${hits.length} of ${texts.length}, best first):`];
+		const among = `${texts.length} task${texts.length === 1 ? '' : 's'}${wanted === undefined ? '' : ` with status ${wanted}`}`;
+		const shownQuery = cut(query, LIST_TEXT_MAX);
+		if (hits.length === 0) return `No tasks match ${shownQuery} among ${among}.`;
+		const lines = [`Tasks matching ${shownQuery} (${hits.length} of ${among}, best first):`];
 		const textOfHit = new Map(texts.map(t => [t.task, t.text]));
 		hits.forEach((h, i) => {
-			lines.push(`${i + 1}. ${label(h.task)}  ${nameOf(h.task, textOfHit.get(h.task))}  (score ${h.score})`, `   ${h.task.file}`);
+			const text = textOfHit.get(h.task);
+			const state = (text === undefined ? undefined : statusOf(text)) || '-';
+			lines.push(`${i + 1}. ${label(h.task)}  ${nameOf(h.task, text)}  [${state}]  (score ${h.score})`, `   ${h.task.file}`);
 			if (h.summary !== '') lines.push(`   ${h.summary}`);
+			for (const l of h.lines) lines.push(`   L${l.line}: ${l.text}`);
 		});
 		return lines.join('\n');
 	};
@@ -449,11 +487,11 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	return {
 		name: 'task',
-		description: 'Task files in project docs: fill and edit them, search for similar tasks',
+		description: 'Task files in project docs: fill and edit them, search them',
 		usage: USAGE,
 		agent: 'safe',
 		subcommands: [
-			{name: 'list', aliases: ['ls'], usage: 'task list [<project>]', description: 'List tasks', agent: 'safe'},
+			{name: 'list', aliases: ['ls'], usage: LIST_USAGE, description: 'List tasks (archived ones with --all)', agent: 'safe'},
 			{name: 'new', usage: NEW_USAGE, description: 'Create a task (without a description: fill it in a form)', agent: 'safe'},
 			{name: 'show', usage: SHOW_USAGE, description: "Show a task's fields and file", agent: 'safe'},
 			{name: 'edit', usage: EDIT_USAGE, description: 'Edit a task in a form', agent: 'deny'},
@@ -461,7 +499,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			{name: 'unset', usage: UNSET_USAGE, description: 'Remove an added field of a task', agent: 'safe'},
 			{name: 'status', usage: STATUS_USAGE, description: 'Show or set the status of a task', agent: 'safe'},
 			{name: 'delete', aliases: ['rm'], usage: DELETE_USAGE, description: 'Delete a task file', agent: 'confirm'},
-			{name: 'search', usage: SEARCH_USAGE, description: 'Find similar tasks', agent: 'safe'},
+			{name: 'search', usage: SEARCH_USAGE, description: 'Find tasks by id, name or text', agent: 'safe'},
 			{name: 'help', usage: 'task help', description: 'Show the usage', agent: 'safe'},
 		],
 		async run(args, ctx) {
@@ -473,8 +511,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					return;
 				case 'list':
 				case 'ls':
-					if (rest.length > 1) throw new Error('Usage: task list [<project>]');
-					ctx.print(list(rest[0] === undefined ? undefined : checkProject(rest[0])));
+					ctx.print(list(rest));
 					return;
 				case 'new':
 					return newTask(rest, ctx);

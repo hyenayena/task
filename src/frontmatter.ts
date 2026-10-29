@@ -83,6 +83,12 @@ export function withoutField(text: string, key: string): string {
 	return front.lines.join('\n');
 }
 
+/** The index of the first line after the properties (0 when the file has none). */
+export const bodyStart = (text: string): number => {
+	const front = frontOf(text);
+	return front ? front.close + 1 : 0;
+};
+
 /** Everything after the properties, without the blank lines around it. */
 export function bodyOf(text: string): string {
 	const front = frontOf(text);

@@ -6,7 +6,7 @@ import {after, describe, it} from 'node:test';
 import type {CommandContext, Logger} from '../../../src/api.js';
 import {createTaskCommand} from '../src/commands.js';
 import plugin, {depsFor} from '../src/index.js';
-import {rank, summaryOf, words} from '../src/search.js';
+import {distance, parseQuery, rank, summaryOf, words} from '../src/search.js';
 import {yamlValue} from '../src/frontmatter.js';
 import {checkFieldKey, checkFieldValue, checkStatus, checkTitle, descriptionOf, extraFields, fieldOf, fieldsOf, formFields, listTasks, nameIn, nextAutoId, parseFileName, slugOf, statusOf, type Task, template, withDescription, withField, withoutField, withStatus} from '../src/tasks.js';
 import type {FormField, FormValue} from '../src/ui/kit.js';
@@ -61,19 +61,61 @@ describe('search ranking', () => {
 	it('ranks by matched words and boosts the given project', () => {
 		const all = rank(docs, 'login oauth');
 		assert.deepEqual(all.map(h => h.task.id).sort(), ['TECH-1', 'TECH-2']);
-		assert.equal(rank(docs, 'login oauth', 'api')[0]?.task.id, 'TECH-2');
-		assert.equal(rank(docs, 'login oauth', 'web')[0]?.task.id, 'TECH-1');
+		assert.equal(rank(docs, 'login oauth', {project: 'api'})[0]?.task.id, 'TECH-2');
+		assert.equal(rank(docs, 'login oauth', {project: 'web'})[0]?.task.id, 'TECH-1');
 	});
 
 	it('matches word forms and summarises with the conclusion', () => {
 		const [hit] = rank(docs, 'footers');
 		assert.equal(hit?.task.id, 'TECH-3');
-		assert.equal(rank(docs, 'login', 'web')[0]?.summary, 'Use the auth module.');
+		assert.equal(rank(docs, 'login', {project: 'web'})[0]?.summary, 'Use the auth module.');
 		assert.equal(summaryOf('## Request\n<!-- c -->\nDo it.\n'), 'Do it.');
 		assert.equal(summaryOf('---\nstatus: new\n---\n\n# Heading\nFirst line.\n'), 'First line.');
 		assert.deepEqual(rank(docs, 'database'), []);
 		assert.throws(() => rank(docs, 'the a'), /Give words/);
 		assert.deepEqual(words('Нова Таска, TECH-1!'), ['нова', 'таска', 'tech']);
+	});
+
+	it('finds a task by id, label or number before any word match', () => {
+		assert.deepEqual(rank(docs, 'tech-2').map(h => h.task.id), ['TECH-2']);
+		assert.deepEqual(rank(docs, 'web/TECH-3').map(h => h.task.id), ['TECH-3']);
+		assert.deepEqual(rank(docs, 'api/TECH-3').map(h => h.task.id), [], 'the label names another project');
+		assert.equal(rank(docs, '3')[0]?.task.id, 'TECH-3');
+		assert.deepEqual(rank(docs, 'TECH-9'), [], 'an unknown id does not fall back to its words');
+		assert.deepEqual(parseQuery('oauth2'), [{kind: 'word', word: 'oauth2'}]);
+		assert.equal(rank(docs, 'TECH-1 footer')[0]?.task.id, 'TECH-1');
+	});
+
+	it('tolerates typos, at less weight than exact words', () => {
+		assert.equal(rank(docs, 'overlpas')[0]?.task.id, 'TECH-3');
+		assert.equal(rank(docs, 'endpiont')[0]?.task.id, 'TECH-2');
+		assert.deepEqual(rank(docs, 'fotr'), [], 'short words need an exact match or a prefix');
+		assert.equal(distance('endpoint', 'endpiont', 2), 1);
+		assert.equal(distance('kitten', 'sitting', 2), 3);
+		assert.equal(distance('abc', 'abcdef', 1), 2);
+	});
+
+	it('requires quoted phrases and drops weak hits', () => {
+		assert.deepEqual(rank(docs, '"login page"').map(h => h.task.id), ['TECH-1']);
+		assert.deepEqual(rank(docs, 'oauth "fix footer"').map(h => h.task.id), ['TECH-3']);
+		assert.throws(() => rank(docs, '"login page'), /no closing quote/);
+		assert.deepEqual(parseQuery('web/TASK-1 Login "a  B" login'), [
+			{kind: 'id', project: 'web', id: 'task-1', words: []},
+			{kind: 'word', word: 'login'},
+			{kind: 'phrase', text: 'a b'},
+		]);
+		const weak = [...docs, {task: task('web', 'TECH-4', 'misc'), text: '# TECH-4 Misc\nlogin\n'}];
+		const ids = rank(weak, 'login oauth endpoint api').map(h => h.task.id);
+		assert.equal(ids[0], 'TECH-2');
+		assert.ok(!ids.includes('TECH-4'), ids.join());
+	});
+
+	it('shows the matching lines with their line numbers, not the summary again', () => {
+		const text = '---\nstatus: done\n---\n\n# TECH-5 Cache\n\nSpeed up pages.\n\n## Plan\nAdd a redis cache.\nNothing else.\n';
+		const [hit] = rank([{task: task('web', 'TECH-5', 'cache'), text}], 'redis speed');
+		assert.equal(hit?.summary, 'Speed up pages.');
+		assert.deepEqual(hit?.lines, [{line: 10, text: 'Add a redis cache.'}]);
+		assert.equal(rank(docs, 'login', {limit: 1}).length, 1);
 	});
 });
 
@@ -174,7 +216,7 @@ describe('task command', () => {
 		assert.match(out, /^1\. api\/TECH-7 /m);
 		assert.match(out, /^2\. web\/TASK-1 [\s\S]*Reuse the OAuth client\./m);
 		assert.doesNotMatch(out, /TASK-9/);
-		assert.match(await run('search', 'database'), /No similar tasks among \d+/);
+		assert.match(await run('search', 'database'), /No tasks match database among \d+ tasks\./);
 		await assert.rejects(run('search', '--project', 'web'), /Usage: task search/);
 	});
 
@@ -399,7 +441,7 @@ describe('task names with spaces', () => {
 		assert.equal(file, path.join(md, 'names', 'tasks', 'TASK-1_fix-login-bug.md'));
 		assert.equal(readFileSync(file, 'utf8'), '---\nname: Fix Login bug\nproject: names\ncreated: 2026-10-23\nstatus: review\n---\n\nThe login fails\n');
 		assert.match(await run('show', 'names', 'TASK-1'), /^names\/TASK-1  Fix Login bug\n/);
-		assert.match(await run('search', 'login'), /names\/TASK-1  Fix Login bug  \(score/);
+		assert.match(await run('search', 'login'), /names\/TASK-1  Fix Login bug  \[review\]  \(score/);
 		assert.equal(await run('new', 'names', '--name', 'Single', 'x'), path.join(md, 'names', 'tasks', 'TASK-2_single.md'));
 		assert.equal(await run('new', 'names', '--name', '"Quoted"', 'x'), path.join(md, 'names', 'tasks', 'TASK-3_quoted.md'));
 	});
@@ -414,5 +456,34 @@ describe('task names with spaces', () => {
 	it('shows the file name when a task has no name property', async () => {
 		writeFileSync(path.join(md, 'names', 'tasks', 'OLD-1_legacy-task.md'), '---\nstatus: done\n---\n\nOlder task.\n');
 		assert.match(await run('show', 'names', 'OLD-1'), /^names\/OLD-1 {2}Legacy task\n/);
+	});
+});
+
+describe('archived tasks', () => {
+	it('hides archived tasks from list unless --all, and says how many are hidden', async () => {
+		isolate('arch');
+		await run('new', 'arch', 'Open', 'work');
+		await run('new', 'arch', '--status', 'archived', 'Old', 'work', 'on', 'caching');
+		const open = await run('list', 'arch');
+		assert.match(open, /^arch\/TASK-1 +new +Open work/m);
+		assert.doesNotMatch(open, /TASK-2/);
+		assert.match(open, /^1 archived hidden \(task list arch --all\)$/m);
+		const all = await run('list', 'arch', '--all');
+		assert.match(all, /^arch\/TASK-2 +archived +Old work/m);
+		assert.doesNotMatch(all, /hidden/);
+		assert.match(await run('list', '--all'), /arch\/TASK-2/);
+		await run('status', 'arch', 'TASK-1', 'archived');
+		assert.match(await run('list', 'arch'), /^No open tasks in \S+; 2 archived hidden \(task list arch --all\)$/);
+		await assert.rejects(run('list', 'arch', '--every'), /Usage: task list/);
+	});
+
+	it('search finds archived tasks, filters by status and shows the matching lines', async () => {
+		const out = await run('search', '--project', 'arch', 'cachng');
+		assert.match(out, /^Tasks matching cachng \(1 of \d+ tasks, best first\):\n1\. arch\/TASK-2  Old work on caching  \[archived\]  \(score [\d.]+\)\n {3}\S+TASK-2_old-work-on-caching\.md\n {3}Old work on caching$/);
+		assert.match(await run('search', '--status', 'new', 'caching'), /^No tasks match caching among \d+ tasks with status new\.$/);
+		assert.match(await run('search', 'arch/task-1'), /^1\. arch\/TASK-1 /m);
+		await assert.rejects(run('search', '--limit', '0', 'x'), /--limit is a number from 1 to 50/);
+		await assert.rejects(run('search', '--status', 'Bad!', 'x'), /one kebab-case word/);
+		await assert.rejects(run('search', '--color', 'x'), /Unknown option --color/);
 	});
 });
