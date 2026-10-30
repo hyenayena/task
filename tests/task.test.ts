@@ -358,7 +358,7 @@ describe('task form', () => {
 		assert.deepEqual(r.titles, ['New task · web']);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.id}=${v.value}`),
-			['project=web', 'id=TASK-3', 'name=', 'status=todo', 'description='],
+			['project=web', 'id=TASK-3', 'name=', 'status=todo', 'type=task', 'parent=', 'description='],
 		);
 		assert.match(r.errors[0]!, /The description must not be empty/);
 		const file = path.join(md, 'web', 'tasks', 'TASK-3_ship-the-task-form.md');
@@ -397,7 +397,7 @@ describe('task form', () => {
 		assert.deepEqual(r.titles, ['Edit task · web/TASK-3']);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.label}=${v.value}`),
-			['Project=web', 'ID=TASK-3', 'Status=todo', 'Description=Ship the task form', 'Priority=high'],
+			['Project=web', 'ID=TASK-3', 'Status=todo', 'Type=task', 'Parent=', 'Description=Ship the task form', 'Priority=high'],
 		);
 		assert.match(r.errors[0]!, /one kebab-case word/);
 		assert.deepEqual(r.printed, [`Saved web/TASK-3: ${file}`]);
@@ -415,7 +415,7 @@ describe('task form', () => {
 		const r = await formRun(['edit', 'web', 'TASK-3'], [{button: 'save', edit: setValue('status', 'done')}]);
 		assert.deepEqual(
 			r.seen[0]!.map(v => `${v.label}=${v.value}`),
-			['Project=web', 'ID=TASK-3', 'Status=new', 'Description=Ship the form. (5 lines: edit the file)'],
+			['Project=web', 'ID=TASK-3', 'Status=new', 'Type=task', 'Parent=', 'Description=Ship the form. (5 lines: edit the file)'],
 		);
 		assert.equal(readFileSync(file, 'utf8'), before.replace('status: new', 'status: done'));
 	});
@@ -425,7 +425,7 @@ describe('task form', () => {
 		isolate('web');
 		let validate!: (label: string, values: FormValue[]) => string | undefined;
 		const el = taskForm({close() {}}, {
-			title: 't', project: 'web', id: 'X-1', isNew: false, status: 'new', description: 'd', fields: [{key: 'Owner', value: 'me'}],
+			title: 't', project: 'web', id: 'X-1', isNew: false, status: 'new', type: 'task', parent: '', description: 'd', fields: [{key: 'Owner', value: 'me'}],
 			save() {}, onDone() {},
 			validateKey: (key, taken) => (taken.includes(key) ? 'taken' : undefined),
 		}) as {props: {add: {validate: typeof validate}}};
@@ -553,5 +553,197 @@ describe('project statuses', () => {
 			statuses: 'safe', 'set-statuses': 'confirm', delete: 'confirm', search: 'safe',
 		});
 		assert.equal(command.agent, 'safe');
+	});
+});
+
+describe('epics', () => {
+	const epFile = (name: string) => path.join(md, 'ep', 'tasks', name);
+
+	it('new: writes type and parent after the status and refuses bad relations', async () => {
+		isolate('ep');
+		const epic = await run('new', 'ep', '--id', 'E-1', '--type', 'epic', 'Login', 'epic');
+		assert.equal(readFileSync(epic, 'utf8'), '---\nname: Login epic\nproject: ep\ncreated: 2026-10-23\nstatus: todo\ntype: epic\n---\n\nLogin epic\n');
+		const child = await run('new', 'ep', '--id', 'T-1', '--parent', 'e-1', 'Login', 'form');
+		assert.match(readFileSync(child, 'utf8'), /\nstatus: todo\nparent: E-1\n---\n/);
+		await assert.rejects(run('new', 'ep', '--type', 'epic', '--parent', 'E-1', 'x'), /An epic is an epic; an epic has no parent/);
+		await assert.rejects(run('new', 'ep', '--parent', 'E-404', 'x'), /ep has no task E-404 to be the parent; "task list ep" lists them/);
+		await assert.rejects(run('new', 'ep', '--parent', 'T-1', 'x'), /ep\/T-1 is not an epic \(make it one with "task set ep T-1 type epic"\)/);
+		await assert.rejects(run('new', 'ep', '--parent', 'ep/E-1', 'x'), /task number may hold/);
+		await assert.rejects(run('new', 'ep', '--type', 'story', 'x'), /The type is task or epic/);
+		assert.deepEqual(listTasks(md, 'ep').map(t => t.id), ['E-1', 'T-1']);
+		assert.equal(
+			template({project: 'ep', title: 'X', date: '2026-10-23', description: 'd', type: 'epic', parent: 'E-1', fields: [{key: 'Priority', value: 'high'}]}),
+			'---\nname: X\nproject: ep\ncreated: 2026-10-23\nstatus: todo\ntype: epic\nparent: E-1\nPriority: high\n---\n\nd\n',
+		);
+	});
+
+	it('set and unset: type and parent, with the refusals', async () => {
+		isolate('ep');
+		await run('new', 'ep', '--id', 'T-2', 'Signup', 'page');
+		const t2 = epFile('T-2_signup-page.md');
+		assert.equal(await run('set', 'ep', 'T-2', 'type', 'Epic'), 'ep/T-2: type = epic (added)');
+		assert.match(readFileSync(t2, 'utf8'), /\nstatus: todo\ntype: epic\n/);
+		assert.equal(await run('set', 'ep', 'T-2', 'type', 'task'), 'ep/T-2: type = task');
+		assert.doesNotMatch(readFileSync(t2, 'utf8'), /type:/);
+		assert.equal(await run('set', 'ep', 'T-2', 'type', 'task'), 'ep/T-2: type = task (unchanged)');
+		await assert.rejects(run('set', 'ep', 'T-2', 'type', 'story'), /The type is task or epic/);
+		await assert.rejects(run('set', 'ep', 'E-1', 'type', 'task'), /ep\/E-1 has tasks: ep\/T-1; unset their parent first \("task unset ep <id> parent"\)/);
+		await assert.rejects(run('set', 'ep', 'T-1', 'type', 'epic'), /ep\/T-1 has parent E-1; unset it first \("task unset ep T-1 parent"\)/);
+		await assert.rejects(run('set', 'ep', 'E-1', 'parent', 'T-1'), /ep\/E-1 is an epic; an epic has no parent/);
+		await assert.rejects(run('set', 'ep', 'T-2', 'parent', 'T-1'), /ep\/T-1 is not an epic/);
+		await assert.rejects(run('set', 'ep', 'T-2', 'parent', 'ep/E-1'), /task number may hold/);
+		assert.equal(await run('set', 'ep', 'T-2', 'parent', 'e-1'), 'ep/T-2: parent = E-1 (added)');
+		assert.equal(await run('set', 'ep', 'T-2', 'parent', 'E-1'), 'ep/T-2: parent = E-1 (unchanged)');
+		await assert.rejects(run('unset', 'ep', 'E-1', 'type'), /ep\/E-1 has tasks: ep\/T-1, ep\/T-2/);
+		assert.equal(await run('unset', 'ep', 'T-2', 'parent'), 'ep/T-2: removed parent');
+		await assert.rejects(run('unset', 'ep', 'T-2', 'parent'), /ep\/T-2 has no field parent/);
+		await assert.rejects(run('unset', 'ep', 'T-2', 'type'), /ep\/T-2 has no field type/);
+		await run('new', 'ep', '--id', 'E-2', '--type', 'epic', 'Second', 'epic');
+		assert.equal(await run('unset', 'ep', 'E-2', 'type'), 'ep/E-2: removed type (now a task)');
+		assert.doesNotMatch(readFileSync(epFile('E-2_second-epic.md'), 'utf8'), /type:/);
+		isolate();
+		await assert.rejects(run('set', 'ep', 'T-2', 'type', 'epic'), /ep is not isolated/);
+		await assert.rejects(run('set', 'ep', 'T-2', 'parent', 'E-1'), /ep is not isolated/);
+	});
+
+	it('show: the tasks of an epic with status counts, the parent of a task, and hand-edit flags', async () => {
+		isolate('ep');
+		await run('set', 'ep', 'T-2', 'parent', 'E-1');
+		await run('status', 'ep', 'T-2', 'in-progress');
+		const epic = await run('show', 'ep', 'E-1');
+		assert.match(epic, /\ntype: epic\nTasks \(2\):\n {2}ep\/T-1 {2}todo {2}Login form\n {2}ep\/T-2 {2}in-progress {2}Signup page\nBy status: todo 1, in-progress 1\n\nLogin epic$/);
+		assert.match(await run('show', 'ep', 'T-1'), /\nparent: E-1\nParent: ep\/E-1 {2}Login epic\n/);
+		assert.doesNotMatch(await run('show', 'ep', 'E-2'), /Parent|Tasks/);
+		writeFileSync(epFile('D-1_dangling.md'), '---\nstatus: todo\nparent: NOPE-1\n---\n\nDangling\n');
+		writeFileSync(epFile('D-2_under-task.md'), '---\nstatus: todo\nparent: E-2\n---\n\nUnder a task\n');
+		writeFileSync(epFile('E-3_bad-epic.md'), '---\nstatus: todo\ntype: Epic\nparent: NOPE-2\n---\n\nBad epic\n');
+		writeFileSync(epFile('S-1_story.md'), '---\nstatus: todo\ntype: story\n---\n\nA story\n');
+		assert.match(await run('show', 'ep', 'D-1'), /\nParent NOPE-1 is missing; fix it with "task set ep D-1 parent <epic-id>" or "task unset ep D-1 parent"\n/);
+		assert.match(await run('show', 'ep', 'D-2'), /\nParent ep\/E-2 is not an epic; fix it with/);
+		assert.match(await run('show', 'ep', 'E-2'), /\n1 task names it as parent but it is not an epic\n/);
+		const bad = await run('show', 'ep', 'E-3');
+		assert.match(bad, /\nAn epic has no parent; remove it with "task unset ep E-3 parent"\n/);
+		assert.match(bad, /\nTasks: none \(add one with "task set ep <id> parent E-3"\)\n/);
+		assert.match(await run('show', 'ep', 'S-1'), /\nType story is not task or epic\n/);
+	});
+
+	it('list: tasks under their epic, epics marked, dangling and archived flags', async () => {
+		const out = await run('list', 'ep');
+		assert.match(out, /^ep\/E-1 +todo +\[epic\] Login epic +\S+E-1_login-epic\.md\n {2}ep\/T-1 +todo +Login form +\S+T-1_login-form\.md\n {2}ep\/T-2 +in-progress +Signup page +\S+T-2_signup-page\.md$/m);
+		assert.match(out, /^ep\/D-1 +todo +Dangling {2}\(parent NOPE-1 missing\) {2}\S+D-1_dangling\.md$/m);
+		assert.match(out, /^ep\/D-2 +todo +Under a task {2}\(parent ep\/E-2 is not an epic\) {2}\S+$/m);
+		assert.match(out, /^ep\/E-3 +todo +\[epic\] Bad epic +\S+$/m);
+		assert.deepEqual(out.split('\n').map(l => l.split(/ +/)[0] || l.trim().split(/ +/)[0]), ['ep/D-1', 'ep/D-2', 'ep/E-1', 'ep/T-1', 'ep/T-2', 'ep/E-2', 'ep/E-3', 'ep/S-1']);
+		await run('status', 'ep', 'T-2', 'archived');
+		const hiddenChild = await run('list', 'ep');
+		assert.doesNotMatch(hiddenChild, /T-2/);
+		assert.match(hiddenChild, /^1 archived hidden \(task list ep --all\)$/m);
+		await run('status', 'ep', 'E-1', 'archived');
+		const hiddenEpic = await run('list', 'ep');
+		assert.match(hiddenEpic, /^ep\/T-1 +todo +Login form {2}\(epic ep\/E-1 is archived\) {2}\S+$/m);
+		assert.match(hiddenEpic, /^2 archived hidden/m);
+		assert.match(await run('list', 'ep', '--all'), /^ep\/E-1 +archived +\[epic\] Login epic +\S+\n {2}ep\/T-1 +todo +Login form +\S+\n {2}ep\/T-2 +archived +Signup page +\S+$/m);
+		await run('status', 'ep', 'E-1', 'todo');
+	});
+
+	it('the form: Type and Parent rows, built-in names refused, relation errors keep the form open', async () => {
+		isolate('ep');
+		assert.deepEqual(extraFields('---\nstatus: todo\ntype: epic\nparent: E-1\nOwner: me\n---\n'), [{key: 'Owner', value: 'me'}]);
+		for (const key of ['Type', 'parent']) {
+			const builtIn = await formRun(['edit', 'ep', 'E-2'], [{button: 'save', edit: addField(key, 'E-1')}, {button: 'cancel'}]);
+			assert.match(builtIn.errors[0]!, new RegExp(`${key} is a built-in field`));
+		}
+		const made = await formRun(['edit', 'ep', 'E-2'], [{button: 'save', edit: setValue('type', 'epic')}]);
+		assert.ok(made.seen[0]!.some(v => v.label === 'Type' && v.value === 'task'));
+		assert.ok(made.seen[0]!.some(v => v.label === 'Parent' && v.value === ''));
+		assert.match(readFileSync(epFile('E-2_second-epic.md'), 'utf8'), /\nstatus: todo\ntype: epic\n---/);
+		const refused = await formRun(['edit', 'ep', 'E-2'], [{button: 'save', edit: setValue('parent', 'E-1')}, {button: 'cancel'}]);
+		assert.match(refused.errors[0]!, /ep\/E-2 is an epic; an epic has no parent/);
+		assert.deepEqual(refused.printed, ['ep/E-2 not changed.']);
+		const kids = await formRun(['edit', 'ep', 'E-1'], [{button: 'save', edit: setValue('type', 'task')}, {button: 'cancel'}]);
+		assert.match(kids.errors[0]!, /ep\/E-1 has tasks: ep\/T-1, ep\/T-2/);
+		const created = await formRun(['new', 'ep', '--parent', 'E-2'], [{button: 'save', edit: setValue('description', 'Child from the form')}]);
+		assert.ok(created.seen[0]!.some(v => v.id === 'parent' && v.value === 'E-2'));
+		const file = listTasks(md, 'ep').find(t => t.name === 'child-from-the-form')!.file;
+		assert.match(readFileSync(file, 'utf8'), /\nstatus: todo\nparent: E-2\n---/);
+	});
+
+	it('delete: an epic with tasks is refused until their parent is unset', async () => {
+		isolate('ep');
+		await assert.rejects(run('delete', 'ep', 'E-1'), /ep\/E-1 has tasks: ep\/T-1, ep\/T-2; unset their parent first/);
+		await run('unset', 'ep', 'T-1', 'parent');
+		await run('unset', 'ep', 'T-2', 'parent');
+		assert.match(await run('rm', 'ep', 'E-1'), /^Deleted ep\/E-1 /);
+	});
+
+	it('help documents the new options', () => {
+		const sub = command.subcommands?.find(s => s.name === 'new');
+		assert.deepEqual(sub?.options?.map(o => o.name), ['--id', '--name', '--status', '--type', '--parent']);
+		assert.match(sub?.usage ?? '', /\[--type task\|epic\] \[--parent <epic-id>\]/);
+	});
+});
+
+describe('epics: hand edits and several projects', () => {
+	const file = (project: string, name: string) => path.join(md, project, 'tasks', name);
+	const put = (project: string, name: string, text: string) => {
+		mkdirSync(path.join(md, project, 'tasks'), {recursive: true});
+		writeFileSync(file(project, name), text);
+	};
+
+	it('keys and values of a hand edit match without regard to case', async () => {
+		isolate('ca');
+		put('ca', 'E-1_big.md', '---\nStatus: todo\nTYPE: EPIC\n---\n\nBig\n');
+		put('ca', 'T-1_kid.md', '---\nstatus: todo\nPARENT: e-1\n---\n\nKid\n');
+		assert.match(await run('show', 'ca', 'E-1'), /\nTasks \(1\):\n {2}ca\/T-1 {2}todo {2}Kid\nBy status: todo 1\n/);
+		assert.match(await run('show', 'ca', 'T-1'), /\nParent: ca\/E-1 {2}Big\n/);
+		assert.match(await run('list', 'ca'), /^ca\/E-1 +todo +\[epic\] Big +\S+\n {2}ca\/T-1 +todo +Kid +\S+$/m);
+		await assert.rejects(run('set', 'ca', 'E-1', 'type', 'task'), /ca\/E-1 has tasks: ca\/T-1/);
+		await assert.rejects(run('delete', 'ca', 'E-1'), /ca\/E-1 has tasks: ca\/T-1/);
+		assert.equal(await run('set', 'ca', 'T-1', 'parent', 'E-1'), 'ca/T-1: parent = E-1 (unchanged)');
+		const text = readFileSync(file('ca', 'T-1_kid.md'), 'utf8');
+		assert.equal(text.match(/parent:/gi)?.length, 1);
+		assert.match(text, /\nPARENT: E-1\n/);
+		assert.equal(await run('unset', 'ca', 'T-1', 'PARENT'), 'ca/T-1: removed parent');
+		assert.doesNotMatch(readFileSync(file('ca', 'T-1_kid.md'), 'utf8'), /parent/i);
+		assert.equal(await run('unset', 'ca', 'E-1', 'Type'), 'ca/E-1: removed type (now a task)');
+	});
+
+	it('a parent never resolves across projects', async () => {
+		isolate('pa', 'pb');
+		await run('new', 'pa', '--id', 'E-1', '--type', 'epic', 'Alpha', 'epic');
+		await run('new', 'pb', '--id', 'T-1', 'Beta', 'task');
+		await assert.rejects(run('set', 'pb', 'T-1', 'parent', 'E-1'), /pb has no task E-1 to be the parent/);
+		await assert.rejects(run('new', 'pb', '--parent', 'E-1', 'x'), /pb has no task E-1/);
+		put('pb', 'T-2_stray.md', '---\nstatus: todo\nparent: E-1\n---\n\nStray\n');
+		assert.match(await run('show', 'pb', 'T-2'), /\nParent E-1 is missing;/);
+		assert.doesNotMatch(await run('show', 'pa', 'E-1'), /T-2/);
+		assert.match(await run('list', 'pb'), /^pb\/T-2 +todo +Stray {2}\(parent E-1 missing\)/m);
+		await run('new', 'pb', '--id', 'E-1', '--type', 'epic', 'Beta', 'epic');
+		assert.match(await run('show', 'pb', 'E-1'), /\nTasks \(1\):\n {2}pb\/T-2 /);
+		assert.doesNotMatch(await run('show', 'pa', 'E-1'), /Tasks \(/);
+		await run('delete', 'pa', 'E-1');
+	});
+
+	it('list over all projects: epics, children and orphans stay with their own project', async () => {
+		isolate('pa', 'pb');
+		await run('new', 'pa', '--id', 'E-9', '--type', 'epic', 'Nine');
+		await run('new', 'pa', '--id', 'A-1', '--parent', 'e-9', 'Child a');
+		await run('new', 'pb', '--id', 'B-1', '--parent', 'E-1', 'Child b');
+		put('pa', 'O-1_orphan.md', '---\nstatus: todo\nparent: E-1\n---\n\nOrphan\n');
+		const names = (await run('list')).split('\n').map(l => l.trim().split(/ +/)[0]);
+		const at = (n: string) => names.indexOf(n);
+		assert.equal(at('pa/A-1'), at('pa/E-9') + 1);
+		assert.equal(at('pb/B-1'), at('pb/E-1') + 1);
+		assert.ok(at('pa/O-1') >= 0);
+		assert.ok(!(await run('list')).includes('  pa/O-1'));
+		assert.match(await run('list'), /pa\/O-1 .*\(parent E-1 missing\)/);
+	});
+
+	it('search and the plain task flow are unaffected', async () => {
+		isolate('pa');
+		await run('new', 'pa', '--id', 'P-1', 'Plain', 'searchable', 'thing');
+		assert.doesNotMatch(readFileSync(file('pa', 'P-1_plain-searchable-thing.md'), 'utf8'), /type:|parent:/);
+		assert.match(await run('search', '--project', 'pa', 'searchable'), /pa\/P-1/);
+		assert.match(await run('show', 'pa', 'P-1'), /^(?!.*(Parent|Tasks))/s);
 	});
 });

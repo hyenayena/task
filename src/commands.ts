@@ -13,6 +13,7 @@ import {
 	checkStatus,
 	checkStatuses,
 	checkTitle,
+	checkType,
 	createTaskFile,
 	DEFAULT_STATUSES,
 	descriptionOf,
@@ -24,9 +25,11 @@ import {
 	formFields,
 	isOneLine,
 	isExtraKey,
+	isEpicText,
 	listTasks,
 	nameIn,
 	nextAutoId,
+	parentOf,
 	readStatuses,
 	readTask,
 	REQUIRED_FIELDS,
@@ -39,6 +42,8 @@ import {
 	tasksDir,
 	template,
 	titleOf,
+	TASK_TYPES,
+	typeOf,
 	withDescription,
 	withField,
 	withoutField,
@@ -54,7 +59,7 @@ export type TaskDeps = {
 	now?: () => Date;
 };
 
-const NEW_USAGE = 'task new [project] [--id <id>] [--name <name>] [--status <status>] [description…]';
+const NEW_USAGE = 'task new [project] [--id <id>] [--name <name>] [--status <status>] [--type task|epic] [--parent <epic-id>] [description…]';
 const STATUS_USAGE = 'task status <project> <id> [status]';
 const STATUSES_USAGE = 'task statuses <project>';
 const SET_STATUSES_USAGE = 'task set-statuses <project> <status…>';
@@ -97,10 +102,13 @@ const SUBCOMMANDS: Subcommand[] = [
 			{name: '--id', value: '<id>', description: 'The id (default: the next TASK-<n>)'},
 			{name: '--name', value: '<name>', description: 'The name (default: the first words of the description)'},
 			{name: '--status', value: '<status>', description: "One of the project's statuses (default: the first)"},
+			{name: '--type', value: '<type>', description: 'task (default) or epic: an epic groups tasks'},
+			{name: '--parent', value: '<epic-id>', description: 'The epic this task belongs to (same project)'},
 		],
 		notes: [
 			'A name with spaces goes in quotes: --name "Fix login bug"; the file name is its kebab-case form (fix-login-bug)',
 			'Without a description, in the app: opens a form to fill it',
+			'Epics: one level; only a task has a parent, and it must be an epic of the same project',
 		],
 		agent: 'safe',
 	},
@@ -111,12 +119,17 @@ const SUBCOMMANDS: Subcommand[] = [
 		usage: SET_USAGE,
 		description: 'Set a field of a task: status, description or any other',
 		args: [PROJECT, ID, {name: 'field', description: 'The field name'}, {name: 'value', description: 'The value: the rest of the line'}],
+		notes: [
+			'type epic|task: an epic groups tasks; it cannot have a parent',
+			'parent <epic-id>: put the task under an epic of the same project',
+			'An epic lists its tasks in "task show"; the list is never stored',
+		],
 		agent: 'safe',
 	},
 	{
 		name: 'unset',
 		usage: UNSET_USAGE,
-		description: 'Remove a field you added (status and description are required)',
+		description: 'Remove a field you added, the parent or the type (status and description are required)',
 		args: [PROJECT, ID, {name: 'field', description: 'The field name'}],
 		agent: 'safe',
 	},
@@ -136,7 +149,15 @@ const SUBCOMMANDS: Subcommand[] = [
 		notes: [`Default: ${DEFAULT_STATUSES.join(', ')}; ${ARCHIVED_STATUS} is always allowed`],
 		agent: 'confirm',
 	},
-	{name: 'delete', aliases: ['rm'], usage: DELETE_USAGE, description: 'Delete a task file', args: [PROJECT, ID], agent: 'confirm'},
+	{
+		name: 'delete',
+		aliases: ['rm'],
+		usage: DELETE_USAGE,
+		description: 'Delete a task file',
+		args: [PROJECT, ID],
+		notes: ['An epic with tasks is refused; unset their parent first'],
+		agent: 'confirm',
+	},
 	{
 		name: 'search',
 		usage: SEARCH_USAGE,
@@ -160,6 +181,7 @@ const NOTES = [
 	'Every task has an id (unique in its project), a status and a description',
 	'The file starts with its properties ("key: value" lines between "---" lines, as in Obsidian)',
 	'The description is the Markdown after them',
+	'A task with "type: epic" is an epic; its tasks name it in "parent"',
 	'Tasks are created and changed only in isolated projects ("project isolate <name>")',
 ];
 
@@ -175,7 +197,7 @@ const firstLineOf = (description: string): string =>
 
 const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-type NewSpec = {project?: string; id?: string; name?: string; status?: string; description?: string};
+type NewSpec = {project?: string; id?: string; name?: string; status?: string; type?: string; parent?: string; description?: string};
 
 function readQuoted(args: string[], at: number): {value: string; last: number} {
 	const first = args[at];
@@ -211,6 +233,8 @@ function parseNew(args: string[]): NewSpec {
 		if (value === undefined) throw new Error(`${arg} needs a value. Usage: ${NEW_USAGE}`);
 		if (arg === '--id') spec.id = checkId(value);
 		else if (arg === '--status') spec.status = checkStatus(value);
+		else if (arg === '--type') spec.type = checkType(value);
+		else if (arg === '--parent') spec.parent = checkId(value);
 		else throw new Error(`Unknown option ${arg.slice(0, 32)}. Usage: ${NEW_USAGE}`);
 	}
 	const words = args.slice(i).join(' ').trim();
@@ -246,10 +270,40 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const log = deps.log ?? noopLog;
 	const now = deps.now ?? (() => new Date());
 
-	const info = (t: Task): {status: string; text: string} => {
+	const info = (t: Task): {status: string; text: string; epic: boolean; parent: string | undefined} => {
 		const text = readTask(t.file);
-		if (text === undefined) return {status: '?', text: nameOf(t, undefined)};
-		return {status: statusOf(text) || '-', text: cut(firstLineOf(descriptionOf(text)) || nameOf(t, text), LIST_TEXT_MAX)};
+		if (text === undefined) return {status: '?', text: nameOf(t, undefined), epic: false, parent: undefined};
+		return {
+			status: statusOf(text) || '-',
+			text: cut(firstLineOf(descriptionOf(text)) || nameOf(t, text), LIST_TEXT_MAX),
+			epic: isEpicText(text),
+			parent: parentOf(text),
+		};
+	};
+
+	const ordered = <R extends {task: Task; epic: boolean; parent: string | undefined}>(found: R[], shown: R[]): {row: R; indent: string; flag: string}[] => {
+		const key = (project: string, id: string): string => `${project}/${id.toLowerCase()}`;
+		const byId = new Map(found.map(r => [key(r.task.project, r.task.id), r]));
+		const visible = new Set(shown);
+		const kids = new Map<R, R[]>();
+		const top: {row: R; flag: string}[] = [];
+		for (const r of shown) {
+			if (r.epic || r.parent === undefined) {
+				top.push({row: r, flag: ''});
+				continue;
+			}
+			const p = byId.get(key(r.task.project, r.parent));
+			let flag: string;
+			if (p === undefined) flag = `(parent ${r.parent} missing)`;
+			else if (!p.epic) flag = `(parent ${label(p.task)} is not an epic)`;
+			else if (!visible.has(p)) flag = `(epic ${label(p.task)} is archived)`;
+			else {
+				kids.set(p, [...(kids.get(p) ?? []), r]);
+				continue;
+			}
+			top.push({row: r, flag});
+		}
+		return top.flatMap(t => [{...t, indent: ''}, ...(kids.get(t.row) ?? []).map(k => ({row: k, indent: '  ', flag: ''}))]);
 	};
 
 	const list = (args: string[]): string => {
@@ -264,9 +318,13 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const hidden = found.length - shown.length;
 		const note = hidden > 0 ? `${hidden} archived hidden (task list${project === undefined ? '' : ` ${project}`} --all)` : '';
 		if (shown.length === 0) return `No open tasks in ${where}; ${note}`;
-		const width = Math.max(...shown.map(r => label(r.task).length));
+		const lines = ordered(found, shown);
+		const width = Math.max(...lines.map(l => l.indent.length + label(l.row.task).length));
 		const sw = Math.max(...shown.map(r => r.status.length));
-		const rows = shown.map(r => `${label(r.task).padEnd(width)}  ${r.status.padEnd(sw)}  ${r.text}  ${r.task.file}`);
+		const rows = lines.map(
+			({row: r, indent, flag}) =>
+				`${(indent + label(r.task)).padEnd(width)}  ${r.status.padEnd(sw)}  ${r.epic ? '[epic] ' : ''}${r.text}${flag === '' ? '' : `  ${flag}`}  ${r.task.file}`,
+		);
 		return [...rows, ...(note === '' ? [] : [note])].join('\n');
 	};
 
@@ -287,6 +345,46 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const text = readTask(task.file);
 		if (text === undefined) throw new Error(`Cannot read ${task.file}`);
 		return text;
+	};
+
+	type Entry = {task: Task; text: string};
+
+	const tasksWithText = (project: string): Entry[] =>
+		listTasks(deps.md, project).flatMap(task => {
+			const text = readTask(task.file);
+			return text === undefined ? [] : [{task, text}];
+		});
+
+	const childrenOf = (project: string, epicId: string, entries: Entry[] = tasksWithText(project)): Entry[] =>
+		entries.filter(e => {
+			const parent = parentOf(e.text);
+			return parent !== undefined && sameKey(parent, epicId);
+		});
+
+	const resolveParent = (project: string, raw: string): Task => {
+		const id = checkId(raw.trim());
+		const epic = listTasks(deps.md, project).find(t => sameKey(t.id, id));
+		if (!epic) throw new Error(`${project} has no task ${id} to be the parent; "task list ${project}" lists them`);
+		const text = readTask(epic.file);
+		if (text === undefined || !isEpicText(text)) throw new Error(`${label(epic)} is not an epic (make it one with "task set ${project} ${epic.id} type epic")`);
+		return epic;
+	};
+
+	const hasTasksError = (epic: Task, kids: Entry[]): Error =>
+		new Error(`${label(epic)} has tasks: ${kids.map(k => label(k.task)).join(', ')}; unset their parent first ("task unset ${epic.project} <id> parent")`);
+
+	const hasParentError = (task: Task, parent: string): Error =>
+		new Error(`${label(task)} has parent ${parent}; unset it first ("task unset ${task.project} ${task.id} parent")`);
+
+	const checkRelation = (task: Task | undefined, project: string, type: string, parent: string | undefined): string | undefined => {
+		if (type === 'epic' && parent !== undefined) throw new Error(`${task ? label(task) : 'An epic'} is an epic; an epic has no parent`);
+		const resolved = parent === undefined ? undefined : resolveParent(project, parent);
+		if (task && resolved && sameKey(resolved.id, task.id)) throw new Error(`${label(task)} cannot be its own parent`);
+		if (task && type !== 'epic' && isEpicText(textOf(task))) {
+			const kids = childrenOf(project, task.id);
+			if (kids.length > 0) throw hasTasksError(task, kids);
+		}
+		return resolved?.id;
 	};
 
 	const allowedText = (project: string): string => allowedStatuses(readStatuses(deps.md, project)).join(', ');
@@ -321,12 +419,14 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return before === value ? `${label(task)}: ${value} (unchanged)` : `${label(task)}: ${before || 'no status'} -> ${value}`;
 	};
 
-	const create = (p: {project: string; id?: string; name?: string; status?: string; description: string; fields?: Field[]}): {task: Task; file: string} => {
+	const create = (p: {project: string; id?: string; name?: string; status?: string; type?: string; parent?: string; description: string; fields?: Field[]}): {task: Task; file: string} => {
 		requireIsolated(p.project);
 		const existing = listTasks(deps.md, p.project);
 		const id = p.id === undefined ? nextAutoId(existing) : checkId(p.id);
 		const clash = existing.find(t => t.id.toLowerCase() === id.toLowerCase());
 		if (clash) throw new Error(`${p.project} already has task ${id}: ${clash.file}`);
+		const type = p.type === undefined ? 'task' : checkType(p.type);
+		const parent = checkRelation(undefined, p.project, type, p.parent);
 		const description = checkDescription(p.description);
 		const taskStatus = p.status === undefined ? firstStatus(readStatuses(deps.md, p.project)) : checkAllowed(p.project, p.status);
 		const title = p.name === undefined ? titleOf(slugOf(description) || 'task') : checkTitle(p.name);
@@ -335,9 +435,51 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const dir = tasksDir(deps.md, p.project);
 		mkdirSync(dir, {recursive: true});
 		const file = path.join(dir, `${id}_${name}.md`);
-		createTaskFile(file, template({project: p.project, title, date: now().toISOString().slice(0, 10), status: taskStatus, description, fields}));
-		log.info('task created', {auto: p.id === undefined, fields: fields.length});
+		createTaskFile(file, template({project: p.project, title, date: now().toISOString().slice(0, 10), status: taskStatus, type, ...(parent !== undefined && {parent}), description, fields}));
+		log.info('task created', {auto: p.id === undefined, fields: fields.length, epic: type === 'epic', child: parent !== undefined});
 		return {task: {project: p.project, id, name, file}, file};
+	};
+
+	const statusCounts = (project: string, kids: Entry[]): string => {
+		const order = allowedStatuses(readStatuses(deps.md, project));
+		const counts = new Map<string, number>();
+		for (const k of kids) {
+			const s = statusOf(k.text) || '-';
+			counts.set(s, (counts.get(s) ?? 0) + 1);
+		}
+		const rankOf = (s: string): number => (order.includes(s) ? order.indexOf(s) : order.length);
+		return [...counts.keys()]
+			.sort((a, b) => rankOf(a) - rankOf(b))
+			.map(s => `${s} ${counts.get(s)}`)
+			.join(', ');
+	};
+
+	const relationLines = (task: Task, text: string): string[] => {
+		const {project, id} = task;
+		const entries = tasksWithText(project);
+		const kids = childrenOf(project, id, entries);
+		const parent = parentOf(text);
+		const rawType = fieldOf(text, 'type')?.trim() ?? '';
+		const out: string[] = [];
+		if (rawType !== '' && !TASK_TYPES.includes(rawType.toLowerCase())) out.push(`Type ${rawType} is not task or epic`);
+		if (isEpicText(text)) {
+			if (parent !== undefined) out.push(`An epic has no parent; remove it with "task unset ${project} ${id} parent"`);
+			if (kids.length === 0) out.push(`Tasks: none (add one with "task set ${project} <id> parent ${id}")`);
+			else {
+				out.push(`Tasks (${kids.length}):`, ...kids.map(k => `  ${label(k.task)}  ${statusOf(k.text) || '-'}  ${nameOf(k.task, k.text)}`));
+				out.push(`By status: ${statusCounts(project, kids)}`);
+			}
+			return out;
+		}
+		if (parent !== undefined) {
+			const epic = entries.find(e => sameKey(e.task.id, parent));
+			const fix = `; fix it with "task set ${project} ${id} parent <epic-id>" or "task unset ${project} ${id} parent"`;
+			if (epic === undefined) out.push(`Parent ${parent} is missing${fix}`);
+			else if (!isEpicText(epic.text)) out.push(`Parent ${label(epic.task)} is not an epic${fix}`);
+			else out.push(`Parent: ${label(epic.task)}  ${nameOf(epic.task, epic.text)}`);
+		}
+		if (kids.length > 0) out.push(`${kids.length} task${kids.length === 1 ? ' names' : 's name'} it as parent but it is not an epic`);
+		return out;
 	};
 
 	const show = (project: string, rawId: string): string => {
@@ -353,6 +495,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			`File: ${task.file}`,
 			...fields.map(f => `${f.key}: ${f.value}`),
 			...(note === undefined ? [] : [`Status ${current} is ${note}; set one with "${STATUS_USAGE}"`]),
+			...relationLines(task, text),
 			...(missing.length > 0 ? [`Missing: ${missing.join(', ')} (set with "${SET_USAGE}")`] : []),
 			...(description === '' ? [] : ['', description]),
 		].join('\n');
@@ -370,9 +513,35 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return `${label(task)}: description = ${value}${before === '' ? ' (added)' : before === value ? ' (unchanged)' : ''}`;
 	};
 
+	const setType = (task: Task, rawValue: string): string => {
+		const value = checkType(rawValue);
+		const text = textOf(task);
+		const before = typeOf(text);
+		const hadLine = fieldOf(text, 'type') !== undefined;
+		const parent = parentOf(text);
+		if (value === 'epic' && parent !== undefined) throw hasParentError(task, parent);
+		checkRelation(task, task.project, value, undefined);
+		requireIsolated(task.project);
+		rewriteTask(task.file, t => (value === 'epic' ? withField(t, 'type', 'epic') : withoutField(t, 'type')));
+		log.info('task field set', {required: true, added: !hadLine});
+		return `${label(task)}: type = ${value}${before === value ? ' (unchanged)' : !hadLine && value === 'epic' ? ' (added)' : ''}`;
+	};
+
+	const setParent = (task: Task, rawValue: string): string => {
+		const text = textOf(task);
+		const parent = checkRelation(task, task.project, typeOf(text), rawValue.trim()) as string;
+		requireIsolated(task.project);
+		const before = parentOf(text);
+		rewriteTask(task.file, t => withField(t, 'parent', parent));
+		log.info('task field set', {required: true, added: before === undefined});
+		return `${label(task)}: parent = ${parent}${before === undefined ? ' (added)' : sameKey(before, parent) ? ' (unchanged)' : ''}`;
+	};
+
 	const set = (project: string, rawId: string, rawKey: string, rawValue: string): string => {
 		const task = findTask(project, rawId);
 		if (sameKey(rawKey, 'description')) return setDescription(task, rawValue);
+		if (sameKey(rawKey, 'type')) return setType(task, rawValue);
+		if (sameKey(rawKey, 'parent')) return setParent(task, rawValue);
 		let key: string;
 		let value: string;
 		if (sameKey(rawKey, 'status')) [key, value] = ['status', checkAllowed(project, rawValue.trim())];
@@ -390,7 +559,15 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const unset = (project: string, rawId: string, rawKey: string): string => {
 		const task = findTask(project, rawId);
 		if ([...REQUIRED_FIELDS, 'description'].some(k => sameKey(k, rawKey))) throw new Error(`Every task needs ${rawKey.toLowerCase()}; change it with "${SET_USAGE}"`);
-		const key = checkFieldKey(rawKey);
+		if (sameKey(rawKey, 'type')) {
+			requireIsolated(project);
+			if (fieldOf(textOf(task), 'type') === undefined) throw new Error(`${label(task)} has no field type`);
+			checkRelation(task, project, 'task', undefined);
+			rewriteTask(task.file, text => withoutField(text, 'type'));
+			log.info('task field removed');
+			return `${label(task)}: removed type (now a task)`;
+		}
+		const key = sameKey(rawKey, 'parent') ? 'parent' : checkFieldKey(rawKey);
 		requireIsolated(project);
 		if (fieldOf(textOf(task), key) === undefined) throw new Error(`${label(task)} has no field ${key}`);
 		rewriteTask(task.file, text => withoutField(text, key));
@@ -426,6 +603,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const task = findTask(project, rawId);
 		requireIsolated(project);
 		if (!lstatSync(task.file).isFile()) throw new Error(`${task.file} is not a regular file`);
+		if (isEpicText(textOf(task))) {
+			const kids = childrenOf(project, task.id);
+			if (kids.length > 0) throw hasTasksError(task, kids);
+		}
 		rmSync(task.file);
 		log.info('task deleted');
 		return `Deleted ${label(task)} (${task.file})`;
@@ -433,10 +614,14 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	const update = (task: Task, values: TaskFormValues, withNewDescription: boolean): void => {
 		const taskStatus = checkAllowed(task.project, values.status, statusOf(textOf(task)));
+		const type = values.type.trim() === '' ? 'task' : checkType(values.type);
+		const parent = checkRelation(task, task.project, type, values.parent.trim() === '' ? undefined : values.parent.trim());
 		const description = withNewDescription ? checkDescription(values.description) : undefined;
 		const fields = checkExtras(values.fields);
 		rewriteTask(task.file, text => {
 			let next = withStatus(text, taskStatus);
+			next = type === 'epic' ? withField(next, 'type', 'epic') : withoutField(next, 'type');
+			next = parent === undefined ? withoutField(next, 'parent') : withField(next, 'parent', parent);
 			if (description !== undefined) next = withDescription(next, description);
 			for (const old of formFields(text)) if (!fields.some(f => sameKey(f.key, old.key))) next = withoutField(next, old.key);
 			for (const f of fields) next = withField(next, f.key, f.value);
@@ -508,6 +693,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 				isNew: existing === undefined,
 				status: (text && statusOf(text)) || preset.status || firstStatus(readStatuses(deps.md, project)),
 				statusHint: `one of: ${allowedText(project)}`,
+				type: (text && typeOf(text)) || preset.type || 'task',
+				typeHint: 'task or epic',
+				parent: (text && parentOf(text)) || preset.parent || '',
+				parentHint: `id of an epic in ${project} (empty: none)`,
 				description: editableDescription ? body || preset.description || '' : `${cut(firstLineOf(body ?? ''), LIST_TEXT_MAX)} (${(body ?? '').split('\n').length} lines: edit the file)`,
 				descriptionReadOnly: !editableDescription,
 				fields: text ? formFields(text) : [],
@@ -532,6 +721,8 @@ export function createTaskCommand(deps: TaskDeps): Command {
 						...(values.id !== '' && {id: values.id}),
 						...(name && {name}),
 						status: values.status,
+						...(values.type.trim() !== '' && {type: values.type}),
+						...(values.parent.trim() !== '' && {parent: values.parent.trim()}),
 						description: values.description,
 						fields: values.fields,
 					});

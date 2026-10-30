@@ -3,7 +3,7 @@ import type {MountControl, UiElement} from '../../../../src/api.js';
 import type {Field} from '../tasks.js';
 import {Form, ListPicker, type FormField, type FormValue} from './kit.js';
 
-export type TaskFormValues = {id: string; name: string; status: string; description: string; fields: Field[]};
+export type TaskFormValues = {id: string; name: string; status: string; type: string; parent: string; description: string; fields: Field[]};
 
 export type TaskFormAction = 'save' | 'discuss';
 
@@ -14,6 +14,10 @@ export type TaskFormSpec = {
 	isNew: boolean;
 	status: string;
 	statusHint?: string;
+	type: string;
+	typeHint?: string;
+	parent: string;
+	parentHint?: string;
 	description: string;
 	descriptionReadOnly?: boolean;
 	fields: Field[];
@@ -38,6 +42,8 @@ export function toTaskValues(values: FormValue[]): TaskFormValues {
 		id: pick(values, 'id'),
 		name: pick(values, 'name'),
 		status: pick(values, 'status'),
+		type: pick(values, 'type'),
+		parent: pick(values, 'parent'),
 		description: pick(values, 'description'),
 		fields: values.filter(v => v.id.startsWith(EXTRA) || v.id.startsWith('added:')).map(v => ({key: v.label, value: v.value})),
 	};
@@ -49,6 +55,8 @@ export function taskForm(control: MountControl, spec: TaskFormSpec): UiElement {
 		{id: 'id', label: 'ID', value: spec.id, ...(!spec.isNew && {readOnly: true})},
 		...(spec.isNew ? [{id: 'name', label: 'Name', value: '', placeholder: spec.namePlaceholder ?? 'spaces allowed; the file name is its kebab-case form'}] : []),
 		{id: 'status', label: 'Status', value: spec.status, ...(spec.statusHint !== undefined && {placeholder: spec.statusHint})},
+		{id: 'type', label: 'Type', value: spec.type, ...(spec.typeHint !== undefined && {placeholder: spec.typeHint})},
+		{id: 'parent', label: 'Parent', value: spec.parent, ...(spec.parentHint !== undefined && {placeholder: spec.parentHint})},
 		{id: 'description', label: 'Description', value: spec.description, placeholder: 'what the task is about (required)', ...(spec.descriptionReadOnly && {readOnly: true})},
 		...spec.fields.map((f, i) => ({id: `${EXTRA}${i}`, label: f.key, value: f.value})),
 	];

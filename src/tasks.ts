@@ -85,13 +85,15 @@ export const titleOf = (name: string): string => {
 	return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
-export function template(p: {project: string; title: string; date: string; description: string; status?: string; fields?: Field[]}): string {
+export function template(p: {project: string; title: string; date: string; description: string; status?: string; type?: string; parent?: string; fields?: Field[]}): string {
 	return render(
 		[
 			{key: 'name', value: p.title},
 			{key: 'project', value: p.project},
 			{key: 'created', value: p.date},
 			{key: 'status', value: p.status ?? (DEFAULT_STATUSES[0] as string)},
+			...(p.type === 'epic' ? [{key: 'type', value: 'epic'}] : []),
+			...(p.parent ? [{key: 'parent', value: p.parent}] : []),
 			...(p.fields ?? []),
 		],
 		p.description,
@@ -234,11 +236,26 @@ const VALUE_MAX = 1000;
 const CONTROL = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f]');
 export const FIXED_FIELDS = ['project', 'created'];
 export const REQUIRED_FIELDS = ['status'];
+export const RELATION_FIELDS = ['type', 'parent'];
 const NAME_FIELDS = ['id', 'name'];
 const BODY_FIELDS = ['description'];
 
 const isIn = (key: string, list: string[]): boolean => list.some(k => k.toLowerCase() === key.toLowerCase());
-export const isExtraKey = (key: string): boolean => !isIn(key, [...FIXED_FIELDS, ...REQUIRED_FIELDS, ...NAME_FIELDS, ...BODY_FIELDS]);
+export const isExtraKey = (key: string): boolean => !isIn(key, [...FIXED_FIELDS, ...REQUIRED_FIELDS, ...RELATION_FIELDS, ...NAME_FIELDS, ...BODY_FIELDS]);
+
+export const TASK_TYPES = ['task', 'epic'];
+
+export function checkType(v: string | undefined): string {
+	const type = (v ?? '').trim().toLowerCase();
+	if (!TASK_TYPES.includes(type)) throw new Error('The type is task or epic');
+	return type;
+}
+
+export const typeOf = (text: string): string => fieldOf(text, 'type')?.trim().toLowerCase() || 'task';
+
+export const isEpicText = (text: string): boolean => typeOf(text) === 'epic';
+
+export const parentOf = (text: string): string | undefined => fieldOf(text, 'parent')?.trim() || undefined;
 
 export const extraFields = (text: string): Field[] => fieldsOf(text).filter(f => isExtraKey(f.key));
 
