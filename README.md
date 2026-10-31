@@ -55,7 +55,7 @@ The list is enforced for the user and the assistant alike: `task new --status`, 
 
 ## Commands
 
-Writing works only in a project isolated with `project isolate` (the project module says which are); reading works everywhere. Ids and field names are matched case-insensitively. A file is changed by writing next to it and renaming over it (never through a symlink; files over 256 KiB are refused).
+Writing works only in a project isolated with `project isolate` (the project module says which are); reading works everywhere. A yena run from the claude chat's Bash never sees the work session (the sandbox hides it), so its refusal says so. Ids and field names are matched case-insensitively. A file is changed by writing next to it and renaming over it (never through a symlink; files over 256 KiB are refused).
 
 - `task list <project> [--all]` lists the tasks of one project (the project is required): id (no project prefix), status (`-` when there is none) and name; no description and no path (`show`, `search` and `new` give the path). Tasks with status `archived` are shown only with `--all`; otherwise the list ends with `N archived hidden (task list <project> --all)` (`No open tasks in <dir>; …` when nothing else is left). An epic's id is preceded by `[epic] ` and its shown tasks follow it, indented by two spaces. A task whose parent is missing or not an epic stays at the top level with `(parent <id> missing)` or `(parent <id> is not an epic)` after the name; a shown task of a hidden (archived) epic gets `(epic <id> is archived)`; a hidden archived task counts in the hidden total.
 - `task new [<project>] [--id <id>] [--name <name>] [--status <status>] [--type task|epic] [--parent <epic-id>] [<description…>]`:

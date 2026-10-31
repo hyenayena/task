@@ -174,7 +174,16 @@ describe('properties', () => {
 describe('task command', () => {
 	it('creates tasks only in isolated projects, with a description', async () => {
 		isolate();
-		await assert.rejects(run('new', 'web', 'Add', 'login'), /web is not isolated; run "project isolate web" first/);
+		const saved = process.env.CLAUDECODE;
+		try {
+			delete process.env.CLAUDECODE;
+			await assert.rejects(run('new', 'web', 'Add', 'login'), /web is not isolated; run "project isolate web" first$/);
+			process.env.CLAUDECODE = '1';
+			await assert.rejects(run('new', 'web', 'Add', 'login'), /first \(a yena run from the chat's Bash cannot see the work session/);
+		} finally {
+			if (saved === undefined) delete process.env.CLAUDECODE;
+			else process.env.CLAUDECODE = saved;
+		}
 		isolate('web');
 		const auto = await run('new', 'web', 'Add', 'login');
 		assert.equal(auto, path.join(md, 'web', 'tasks', 'TASK-1_add-login.md'));

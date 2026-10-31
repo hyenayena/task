@@ -351,7 +351,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	const requireIsolated = (project: string) => {
 		if (!deps.isolated().includes(project)) {
-			throw new Error(`${project} is not isolated; run "project isolate ${project}" first`);
+			const why = process.env.CLAUDECODE
+				? ' (a yena run from the chat\'s Bash cannot see the work session, the sandbox hides it: use the console tools, and restart yena to load new module code)'
+				: '';
+			throw new Error(`${project} is not isolated; run "project isolate ${project}" first${why}`);
 		}
 	};
 
