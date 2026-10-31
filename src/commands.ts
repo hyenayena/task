@@ -1,6 +1,7 @@
 import {lstatSync, mkdirSync, rmSync} from 'node:fs';
 import path from 'node:path';
-import type {Command, CommandContext, Logger, Subcommand} from '../../../src/api.js';
+import type {Command, CommandContext, Logger, SpanTone, StyledBlock, Subcommand} from '../../../src/api.js';
+import {decorLine, line, printStyled, rule, span, table, textBlock} from './kit.js';
 import {noopLog} from './log.js';
 import {rank} from './search.js';
 import {
@@ -68,7 +69,7 @@ const EDIT_USAGE = 'task edit <project> <id>';
 const SET_USAGE = 'task set <project> <id> <field> <value…>';
 const UNSET_USAGE = 'task unset <project> <id> <field>';
 const DELETE_USAGE = 'task delete <project> <id>';
-const LIST_USAGE = 'task list [project] [--all]';
+const LIST_USAGE = 'task list <project> [--all]';
 const SEARCH_USAGE = 'task search [--project <project>] [--status <status>] [--limit <n>] <query>…';
 const LINE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
 const USAGE = 'task <subcommand>';
@@ -85,8 +86,8 @@ const SUBCOMMANDS: Subcommand[] = [
 		name: 'list',
 		aliases: ['ls'],
 		usage: LIST_USAGE,
-		description: 'List tasks, of every project or of one',
-		args: [{name: 'project', description: 'Only the tasks of this project'}],
+		description: 'List the tasks of a project',
+		args: [PROJECT],
 		options: [{name: '--all', description: `Also the archived ones (status ${ARCHIVED_STATUS})`}],
 		agent: 'safe',
 	},
@@ -187,6 +188,10 @@ const NOTES = [
 
 const label = (t: Task): string => `${t.project}/${t.id}`;
 
+const withTone = (tone: SpanTone | undefined): {tone?: SpanTone} => (tone === undefined ? {} : {tone});
+
+const labelled = (task: Task, rest: string): StyledBlock => line(span(label(task), {bold: true}), rest);
+
 const nameOf = (t: Task, text: string | undefined): string => (text === undefined ? undefined : nameIn(text)) ?? titleOf(t.name);
 
 const firstLineOf = (description: string): string =>
@@ -275,7 +280,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		if (text === undefined) return {status: '?', text: nameOf(t, undefined), epic: false, parent: undefined};
 		return {
 			status: statusOf(text) || '-',
-			text: cut(firstLineOf(descriptionOf(text)) || nameOf(t, text), LIST_TEXT_MAX),
+			text: cut(nameOf(t, text), LIST_TEXT_MAX),
 			epic: isEpicText(text),
 			parent: parentOf(text),
 		};
@@ -295,8 +300,8 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			const p = byId.get(key(r.task.project, r.parent));
 			let flag: string;
 			if (p === undefined) flag = `(parent ${r.parent} missing)`;
-			else if (!p.epic) flag = `(parent ${label(p.task)} is not an epic)`;
-			else if (!visible.has(p)) flag = `(epic ${label(p.task)} is archived)`;
+			else if (!p.epic) flag = `(parent ${p.task.id} is not an epic)`;
+			else if (!visible.has(p)) flag = `(epic ${p.task.id} is archived)`;
 			else {
 				kids.set(p, [...(kids.get(p) ?? []), r]);
 				continue;
@@ -306,26 +311,42 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		return top.flatMap(t => [{...t, indent: ''}, ...(kids.get(t.row) ?? []).map(k => ({row: k, indent: '  ', flag: ''}))]);
 	};
 
-	const list = (args: string[]): string => {
+	const statusToner = (): ((project: string, status: string) => SpanTone | undefined) => {
+		const lists = new Map<string, string[]>();
+		return (project, status) => {
+			if (status === ARCHIVED_STATUS || status === '-' || status === '?') return 'muted';
+			let list = lists.get(project);
+			if (list === undefined) {
+				list = readStatuses(deps.md, project).list.filter(s => s !== ARCHIVED_STATUS);
+				lists.set(project, list);
+			}
+			if (status === list.at(-1)) return 'ok';
+			return status === list[0] ? undefined : 'warn';
+		};
+	};
+
+	const statusSpan = (project: string, status: string) => span(status, withTone(statusToner()(project, status)));
+
+	const list = (args: string[]): StyledBlock[] => {
 		const all = args.includes('--all');
 		const rest = args.filter(a => a !== '--all');
-		if (rest.length > 1 || rest.some(a => a.startsWith('--'))) throw new Error(`Usage: ${LIST_USAGE}`);
-		const project = rest[0] === undefined ? undefined : checkProject(rest[0]);
-		const where = project === undefined ? deps.md : tasksDir(deps.md, project);
+		if (rest.length !== 1 || rest[0]!.startsWith('--')) throw new Error(`Usage: ${LIST_USAGE}`);
+		const project = checkProject(rest[0]!);
+		const where = tasksDir(deps.md, project);
 		const found = listTasks(deps.md, project).map(t => ({task: t, ...info(t)}));
-		if (found.length === 0) return `No tasks in ${where}`;
+		if (found.length === 0) return [line(`No tasks in ${where}`)];
 		const shown = all ? found : found.filter(r => r.status !== ARCHIVED_STATUS);
 		const hidden = found.length - shown.length;
-		const note = hidden > 0 ? `${hidden} archived hidden (task list${project === undefined ? '' : ` ${project}`} --all)` : '';
-		if (shown.length === 0) return `No open tasks in ${where}; ${note}`;
-		const lines = ordered(found, shown);
-		const width = Math.max(...lines.map(l => l.indent.length + label(l.row.task).length));
-		const sw = Math.max(...shown.map(r => r.status.length));
-		const rows = lines.map(
-			({row: r, indent, flag}) =>
-				`${(indent + label(r.task)).padEnd(width)}  ${r.status.padEnd(sw)}  ${r.epic ? '[epic] ' : ''}${r.text}${flag === '' ? '' : `  ${flag}`}  ${r.task.file}`,
-		);
-		return [...rows, ...(note === '' ? [] : [note])].join('\n');
+		const note = hidden > 0 ? `${hidden} archived hidden (task list ${project} --all)` : '';
+		if (shown.length === 0) return [line(`No open tasks in ${where}; ${note}`)];
+		const tone = statusToner();
+		const rows = ordered(found, shown).map(({row: r, indent, flag}) => [
+			[indent, ...(r.epic ? [span('[epic] ', {tone: 'accent', bold: true})] : []), span(r.task.id, {tone: 'accent'})],
+			span(r.status, withTone(tone(project, r.status))),
+			r.text,
+			span(flag, {tone: 'warn'}),
+		]);
+		return [table(rows, {head: ['Task', 'Status', 'Name', ''], flex: 2}), ...(note === '' ? [] : [line(span(note, {tone: 'muted'}))])];
 	};
 
 	const requireIsolated = (project: string) => {
@@ -400,13 +421,13 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			? undefined
 			: `not a status of ${project} (${allowedText(project)})`;
 
-	const status = (project: string, rawId: string, next: string | undefined): string => {
+	const status = (project: string, rawId: string, next: string | undefined): StyledBlock => {
 		const task = findTask(project, rawId);
 		if (next === undefined) {
 			const current = statusOf(textOf(task));
-			if (current === undefined || current === '') return `${label(task)}: no status (set one with "${STATUS_USAGE}")`;
+			if (current === undefined || current === '') return labelled(task, `: no status (set one with "${STATUS_USAGE}")`);
 			const note = offListNote(project, current);
-			return `${label(task)}: ${current}${note === undefined ? '' : ` (${note})`}`;
+			return line(span(label(task), {bold: true}), ': ', statusSpan(project, current), ...(note === undefined ? [] : [span(` (${note})`, {tone: 'warn'})]));
 		}
 		const value = checkAllowed(project, next);
 		requireIsolated(project);
@@ -416,7 +437,9 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			return withStatus(text, value);
 		});
 		log.info('task status set', {status: value});
-		return before === value ? `${label(task)}: ${value} (unchanged)` : `${label(task)}: ${before || 'no status'} -> ${value}`;
+		return before === value
+			? line(span(label(task), {bold: true}), ': ', statusSpan(project, value), ' (unchanged)')
+			: line(span(label(task), {bold: true}), `: ${before || 'no status'} -> `, statusSpan(project, value));
 	};
 
 	const create = (p: {project: string; id?: string; name?: string; status?: string; type?: string; parent?: string; description: string; fields?: Field[]}): {task: Task; file: string} => {
@@ -454,35 +477,45 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			.join(', ');
 	};
 
-	const relationLines = (task: Task, text: string): string[] => {
+	const relationBlocks = (task: Task, text: string): StyledBlock[] => {
 		const {project, id} = task;
 		const entries = tasksWithText(project);
 		const kids = childrenOf(project, id, entries);
 		const parent = parentOf(text);
 		const rawType = fieldOf(text, 'type')?.trim() ?? '';
-		const out: string[] = [];
-		if (rawType !== '' && !TASK_TYPES.includes(rawType.toLowerCase())) out.push(`Type ${rawType} is not task or epic`);
+		const warn = (message: string) => line(span(message, {tone: 'warn'}));
+		const out: StyledBlock[] = [];
+		if (rawType !== '' && !TASK_TYPES.includes(rawType.toLowerCase())) out.push(warn(`Type ${rawType} is not task or epic`));
 		if (isEpicText(text)) {
-			if (parent !== undefined) out.push(`An epic has no parent; remove it with "task unset ${project} ${id} parent"`);
-			if (kids.length === 0) out.push(`Tasks: none (add one with "task set ${project} <id> parent ${id}")`);
+			if (parent !== undefined) out.push(warn(`An epic has no parent; remove it with "task unset ${project} ${id} parent"`));
+			if (kids.length === 0) out.push(line(`Tasks: none (add one with "task set ${project} <id> parent ${id}")`));
 			else {
-				out.push(`Tasks (${kids.length}):`, ...kids.map(k => `  ${label(k.task)}  ${statusOf(k.text) || '-'}  ${nameOf(k.task, k.text)}`));
-				out.push(`By status: ${statusCounts(project, kids)}`);
+				const tone = statusToner();
+				out.push(
+					line(span(`Tasks (${kids.length}):`, {bold: true})),
+					table(
+						kids.map(k => {
+							const s = statusOf(k.text) || '-';
+							return [['  ', span(label(k.task), {tone: 'accent'})], span(s, withTone(tone(project, s))), nameOf(k.task, k.text)];
+						}),
+					),
+					line(`By status: ${statusCounts(project, kids)}`),
+				);
 			}
 			return out;
 		}
 		if (parent !== undefined) {
 			const epic = entries.find(e => sameKey(e.task.id, parent));
 			const fix = `; fix it with "task set ${project} ${id} parent <epic-id>" or "task unset ${project} ${id} parent"`;
-			if (epic === undefined) out.push(`Parent ${parent} is missing${fix}`);
-			else if (!isEpicText(epic.text)) out.push(`Parent ${label(epic.task)} is not an epic${fix}`);
-			else out.push(`Parent: ${label(epic.task)}  ${nameOf(epic.task, epic.text)}`);
+			if (epic === undefined) out.push(warn(`Parent ${parent} is missing${fix}`));
+			else if (!isEpicText(epic.text)) out.push(warn(`Parent ${label(epic.task)} is not an epic${fix}`));
+			else out.push(line(span('Parent:', {tone: 'muted'}), ' ', span(label(epic.task), {tone: 'accent'}), `  ${nameOf(epic.task, epic.text)}`));
 		}
-		if (kids.length > 0) out.push(`${kids.length} task${kids.length === 1 ? ' names' : 's name'} it as parent but it is not an epic`);
+		if (kids.length > 0) out.push(warn(`${kids.length} task${kids.length === 1 ? ' names' : 's name'} it as parent but it is not an epic`));
 		return out;
 	};
 
-	const show = (project: string, rawId: string): string => {
+	const show = (project: string, rawId: string): StyledBlock[] => {
 		const task = findTask(project, rawId);
 		const text = textOf(task);
 		const fields = fieldsOf(text);
@@ -491,17 +524,18 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const current = statusOf(text);
 		const note = offListNote(project, current);
 		return [
-			`${label(task)}  ${nameOf(task, text)}`,
-			`File: ${task.file}`,
-			...fields.map(f => `${f.key}: ${f.value}`),
-			...(note === undefined ? [] : [`Status ${current} is ${note}; set one with "${STATUS_USAGE}"`]),
-			...relationLines(task, text),
-			...(missing.length > 0 ? [`Missing: ${missing.join(', ')} (set with "${SET_USAGE}")`] : []),
-			...(description === '' ? [] : ['', description]),
-		].join('\n');
+			line(span(label(task), {tone: 'accent', bold: true}), '  ', span(nameOf(task, text), {bold: true})),
+			rule(),
+			line(span('File:', {tone: 'muted'}), ` ${task.file}`),
+			...(fields.length === 0 ? [] : [table(fields.map(f => [span(`${f.key}:`, {tone: 'muted'}), f.value]))]),
+			...(note === undefined ? [] : [line(span(`Status ${current} is ${note}; set one with "${STATUS_USAGE}"`, {tone: 'warn'}))]),
+			...relationBlocks(task, text),
+			...(missing.length > 0 ? [line(span(`Missing: ${missing.join(', ')} (set with "${SET_USAGE}")`, {tone: 'warn'}))] : []),
+			...(description === '' ? [] : [line(), textBlock(description)]),
+		];
 	};
 
-	const setDescription = (task: Task, rawValue: string): string => {
+	const setDescription = (task: Task, rawValue: string): StyledBlock => {
 		const value = checkDescription(rawValue);
 		requireIsolated(task.project);
 		let before = '';
@@ -510,10 +544,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			return withDescription(text, value);
 		});
 		log.info('task field set', {required: true, added: before === ''});
-		return `${label(task)}: description = ${value}${before === '' ? ' (added)' : before === value ? ' (unchanged)' : ''}`;
+		return labelled(task, `: description = ${value}${before === '' ? ' (added)' : before === value ? ' (unchanged)' : ''}`);
 	};
 
-	const setType = (task: Task, rawValue: string): string => {
+	const setType = (task: Task, rawValue: string): StyledBlock => {
 		const value = checkType(rawValue);
 		const text = textOf(task);
 		const before = typeOf(text);
@@ -524,20 +558,20 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		requireIsolated(task.project);
 		rewriteTask(task.file, t => (value === 'epic' ? withField(t, 'type', 'epic') : withoutField(t, 'type')));
 		log.info('task field set', {required: true, added: !hadLine});
-		return `${label(task)}: type = ${value}${before === value ? ' (unchanged)' : !hadLine && value === 'epic' ? ' (added)' : ''}`;
+		return labelled(task, `: type = ${value}${before === value ? ' (unchanged)' : !hadLine && value === 'epic' ? ' (added)' : ''}`);
 	};
 
-	const setParent = (task: Task, rawValue: string): string => {
+	const setParent = (task: Task, rawValue: string): StyledBlock => {
 		const text = textOf(task);
 		const parent = checkRelation(task, task.project, typeOf(text), rawValue.trim()) as string;
 		requireIsolated(task.project);
 		const before = parentOf(text);
 		rewriteTask(task.file, t => withField(t, 'parent', parent));
 		log.info('task field set', {required: true, added: before === undefined});
-		return `${label(task)}: parent = ${parent}${before === undefined ? ' (added)' : sameKey(before, parent) ? ' (unchanged)' : ''}`;
+		return labelled(task, `: parent = ${parent}${before === undefined ? ' (added)' : sameKey(before, parent) ? ' (unchanged)' : ''}`);
 	};
 
-	const set = (project: string, rawId: string, rawKey: string, rawValue: string): string => {
+	const set = (project: string, rawId: string, rawKey: string, rawValue: string): StyledBlock => {
 		const task = findTask(project, rawId);
 		if (sameKey(rawKey, 'description')) return setDescription(task, rawValue);
 		if (sameKey(rawKey, 'type')) return setType(task, rawValue);
@@ -553,10 +587,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			return withField(text, key, value);
 		});
 		log.info('task field set', {required: !isExtraKey(key), added: before === undefined});
-		return `${label(task)}: ${key} = ${value}${before === undefined ? ' (added)' : before === value ? ' (unchanged)' : ''}`;
+		return labelled(task, `: ${key} = ${value}${before === undefined ? ' (added)' : before === value ? ' (unchanged)' : ''}`);
 	};
 
-	const unset = (project: string, rawId: string, rawKey: string): string => {
+	const unset = (project: string, rawId: string, rawKey: string): StyledBlock => {
 		const task = findTask(project, rawId);
 		if ([...REQUIRED_FIELDS, 'description'].some(k => sameKey(k, rawKey))) throw new Error(`Every task needs ${rawKey.toLowerCase()}; change it with "${SET_USAGE}"`);
 		if (sameKey(rawKey, 'type')) {
@@ -565,23 +599,23 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			checkRelation(task, project, 'task', undefined);
 			rewriteTask(task.file, text => withoutField(text, 'type'));
 			log.info('task field removed');
-			return `${label(task)}: removed type (now a task)`;
+			return labelled(task, ': removed type (now a task)');
 		}
 		const key = sameKey(rawKey, 'parent') ? 'parent' : checkFieldKey(rawKey);
 		requireIsolated(project);
 		if (fieldOf(textOf(task), key) === undefined) throw new Error(`${label(task)} has no field ${key}`);
 		rewriteTask(task.file, text => withoutField(text, key));
 		log.info('task field removed');
-		return `${label(task)}: removed ${key}`;
+		return labelled(task, `: removed ${key}`);
 	};
 
-	const statuses = (project: string): string => {
+	const statuses = (project: string): StyledBlock => {
 		const s = readStatuses(deps.md, project);
 		const where = s.own ? statusesFile(deps.md, project) : `the default; set its own with "${SET_STATUSES_USAGE}"`;
-		return `Statuses of ${project} (${where}): ${allowedStatuses(s).join(', ')}`;
+		return line(span(`Statuses of ${project}`, {bold: true}), ` (${where}): ${allowedStatuses(s).join(', ')}`);
 	};
 
-	const setStatuses = (project: string, values: string[]): string => {
+	const setStatuses = (project: string, values: string[]): StyledBlock[] => {
 		const list = checkStatuses(values);
 		requireIsolated(project);
 		const before = readStatuses(deps.md, project);
@@ -594,12 +628,12 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			return current === undefined || current === '' || isAllowedStatus(after, current) ? [] : [`${label(t)} (${current})`];
 		});
 		return [
-			`Statuses of ${project}: ${allowedStatuses(before).join(', ')} -> ${allowedStatuses(after).join(', ')}`,
-			...(off.length === 0 ? [] : [`${off.length} task${off.length === 1 ? ' has a status' : 's have statuses'} outside the list: ${off.join(', ')}`]),
-		].join('\n');
+			line(span(`Statuses of ${project}`, {bold: true}), `: ${allowedStatuses(before).join(', ')} -> ${allowedStatuses(after).join(', ')}`),
+			...(off.length === 0 ? [] : [line(span(`${off.length} task${off.length === 1 ? ' has a status' : 's have statuses'} outside the list: ${off.join(', ')}`, {tone: 'warn'}))]),
+		];
 	};
 
-	const remove = (project: string, rawId: string): string => {
+	const remove = (project: string, rawId: string): StyledBlock => {
 		const task = findTask(project, rawId);
 		requireIsolated(project);
 		if (!lstatSync(task.file).isFile()) throw new Error(`${task.file} is not a regular file`);
@@ -609,7 +643,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		}
 		rmSync(task.file);
 		log.info('task deleted');
-		return `Deleted ${label(task)} (${task.file})`;
+		return line(span('Deleted', {tone: 'ok'}), ` ${label(task)} (${task.file})`);
 	};
 
 	const update = (task: Task, values: TaskFormValues, withNewDescription: boolean): void => {
@@ -630,7 +664,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		log.info('task edited', {fields: fields.length});
 	};
 
-	const search = (args: string[]): string => {
+	const search = (args: string[]): StyledBlock[] => {
 		let project: string | undefined;
 		let wanted: string | undefined;
 		let limit = SEARCH_LIMIT;
@@ -663,17 +697,30 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		log.info('task search', {tasks: texts.length, hits: hits.length});
 		const among = `${texts.length} task${texts.length === 1 ? '' : 's'}${wanted === undefined ? '' : ` with status ${wanted}`}`;
 		const shownQuery = cut(query, LIST_TEXT_MAX);
-		if (hits.length === 0) return `No tasks match ${shownQuery} among ${among}.`;
-		const lines = [`Tasks matching ${shownQuery} (${hits.length} of ${among}, best first):`];
+		if (hits.length === 0) return [line(`No tasks match ${shownQuery} among ${among}.`)];
+		const out = [line(span(`Tasks matching ${shownQuery} (${hits.length} of ${among}, best first):`, {bold: true}))];
 		const textOfHit = new Map(texts.map(t => [t.task, t.text]));
+		const tone = statusToner();
 		hits.forEach((h, i) => {
 			const text = textOfHit.get(h.task);
 			const state = (text === undefined ? undefined : statusOf(text)) || '-';
-			lines.push(`${i + 1}. ${label(h.task)}  ${nameOf(h.task, text)}  [${state}]  (score ${h.score})`, `   ${h.task.file}`);
-			if (h.summary !== '') lines.push(`   ${h.summary}`);
-			for (const l of h.lines) lines.push(`   L${l.line}: ${l.text}`);
+			if (i > 0) out.push(decorLine());
+			out.push(
+				line(
+					span(`${i + 1}.`, {tone: 'muted'}),
+					' ',
+					span(label(h.task), {tone: 'accent'}),
+					`  ${nameOf(h.task, text)}  `,
+					span(`[${state}]`, withTone(tone(h.task.project, state))),
+					'  ',
+					span(`(score ${h.score})`, {tone: 'muted'}),
+				),
+				line('   ', span(h.task.file, {tone: 'muted'})),
+			);
+			if (h.summary !== '') out.push(line(`   ${h.summary}`));
+			for (const l of h.lines) out.push(line('   ', span(`L${l.line}:`, {tone: 'muted'}), ` ${l.text}`));
 		});
-		return lines.join('\n');
+		return out;
 	};
 
 	const openForm = async (ctx: CommandContext, project: string, existing: Task | undefined, preset: NewSpec): Promise<void> => {
@@ -737,7 +784,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			ctx.print(existing ? `${label(existing)} not changed.` : 'No task created.');
 			return;
 		}
-		ctx.print(`${existing ? 'Saved' : 'Created'} ${label(saved.task)}: ${saved.task.file}`);
+		printStyled(ctx, [line(span(existing ? 'Saved' : 'Created', {tone: 'ok'}), ` ${label(saved.task)}: ${saved.task.file}`)]);
 		if (saved.action !== 'discuss') return;
 		const message = discussMessage(label(saved.task), saved.task.file);
 		const runLine = (host as {runLine?: unknown} | undefined)?.runLine;
@@ -750,7 +797,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const spec = parseNew(args);
 		if (spec.description !== undefined) {
 			if (spec.project === undefined) throw new Error(`Usage: ${NEW_USAGE}`);
-			ctx.print(create({...spec, project: spec.project, description: spec.description}).file);
+			printStyled(ctx, [line(span('Created ', {decor: true, tone: 'ok'}), create({...spec, project: spec.project, description: spec.description}).file)]);
 			return;
 		}
 		if (!canShowForm(ctx)) throw new Error(`A task needs a description. Usage: ${NEW_USAGE} (without a description it opens a form, in the app only)`);
@@ -796,43 +843,43 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					return ctx.showHelp ? ctx.showHelp() : ctx.print(USAGE);
 				case 'list':
 				case 'ls':
-					ctx.print(list(rest));
+					printStyled(ctx, list(rest));
 					return;
 				case 'new':
 					return newTask(rest, ctx);
 				case 'show':
 					exactly(rest, 2, SHOW_USAGE);
-					ctx.print(show(checkProject(rest[0]), rest[1] as string));
+					printStyled(ctx, show(checkProject(rest[0]), rest[1] as string));
 					return;
 				case 'edit':
 					return edit(rest, ctx);
 				case 'set':
 					if (rest.length < 4) throw new Error(`Usage: ${SET_USAGE}`);
-					ctx.print(set(checkProject(rest[0]), rest[1] as string, rest[2] as string, rest.slice(3).join(' ')));
+					printStyled(ctx, [set(checkProject(rest[0]), rest[1] as string, rest[2] as string, rest.slice(3).join(' '))]);
 					return;
 				case 'unset':
 					exactly(rest, 3, UNSET_USAGE);
-					ctx.print(unset(checkProject(rest[0]), rest[1] as string, rest[2] as string));
+					printStyled(ctx, [unset(checkProject(rest[0]), rest[1] as string, rest[2] as string)]);
 					return;
 				case 'status':
 					if (rest.length < 2 || rest.length > 3) throw new Error(`Usage: ${STATUS_USAGE}`);
-					ctx.print(status(checkProject(rest[0]), rest[1] as string, rest[2]));
+					printStyled(ctx, [status(checkProject(rest[0]), rest[1] as string, rest[2])]);
 					return;
 				case 'statuses':
 					exactly(rest, 1, STATUSES_USAGE);
-					ctx.print(statuses(checkProject(rest[0])));
+					printStyled(ctx, [statuses(checkProject(rest[0]))]);
 					return;
 				case 'set-statuses':
 					if (rest.length < 2) throw new Error(`Usage: ${SET_STATUSES_USAGE}`);
-					ctx.print(setStatuses(checkProject(rest[0]), rest.slice(1)));
+					printStyled(ctx, setStatuses(checkProject(rest[0]), rest.slice(1)));
 					return;
 				case 'delete':
 				case 'rm':
 					exactly(rest, 2, DELETE_USAGE);
-					ctx.print(remove(checkProject(rest[0]), rest[1] as string));
+					printStyled(ctx, [remove(checkProject(rest[0]), rest[1] as string)]);
 					return;
 				case 'search':
-					ctx.print(search(rest));
+					printStyled(ctx, search(rest));
 					return;
 				default:
 					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${LINE}`);

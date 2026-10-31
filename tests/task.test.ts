@@ -3,7 +3,8 @@ import {existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {after, describe, it} from 'node:test';
-import type {CommandContext, Logger} from '../../../src/api.js';
+import type {CommandContext, Logger, StyledBlock} from '../../../src/api.js';
+import {plainLines, renderStyled} from '../src/kit.js';
 import {createTaskCommand} from '../src/commands.js';
 import plugin, {depsFor} from '../src/index.js';
 import {distance, parseQuery, rank, summaryOf, words} from '../src/search.js';
@@ -196,14 +197,17 @@ describe('task command', () => {
 		await assert.rejects(run('new', '--id', 'X-1', 'words'), /Usage: task new/);
 	});
 
-	it('lists tasks of all projects or one, with status and description', async () => {
+	it('lists the tasks of one project: bare id, status and name; the project is required', async () => {
 		isolate('api');
 		await run('new', 'api', '--id', 'TECH-7', '--name', 'add-login-endpoint', 'OAuth login for the API');
-		const all = await run('list');
-		assert.match(all, /^api\/TECH-7 +todo +OAuth login for the API +\S+TECH-7_add-login-endpoint\.md$/m);
-		assert.match(all, /^web\/TASK-1 +todo +Add login/m);
-		assert.doesNotMatch(await run('list', 'api'), /web\//);
+		const one = await run('list', 'api');
+		assert.match(one, /^TECH-7 +todo +add-login-endpoint$/m);
+		assert.doesNotMatch(one, /web|\.md|OAuth/);
+		assert.match(await run('list', 'web'), /^TASK-1 +todo +\S/m);
 		assert.match(await run('list', 'none'), /No tasks in/);
+		await assert.rejects(run('list'), /Usage: task list <project> \[--all\]/);
+		await assert.rejects(run('list', '--all'), /Usage: task list <project>/);
+		await assert.rejects(run('list', 'api', 'web'), /Usage: task list <project>/);
 	});
 
 	it('searches every project, skipping symlinked files', async () => {
@@ -229,7 +233,7 @@ describe('task command', () => {
 		const text = readFileSync(file, 'utf8');
 		assert.match(text, /\nstatus: in-progress\n/);
 		assert.equal(text.match(/^status:/gm)?.length, 1, 'one status line');
-		assert.match(await run('list', 'web'), /^web\/TASK-2 +in-progress +The footer overlaps/m);
+		assert.match(await run('list', 'web'), /^TASK-2 +in-progress +\S/m);
 		isolate();
 		await assert.rejects(run('status', 'web', 'TASK-2', 'done'), /web is not isolated/);
 		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress', 'reading works without isolation');
@@ -254,7 +258,7 @@ describe('task command', () => {
 	it('shows, sets and removes fields; status and description stay required', async () => {
 		isolate('web');
 		writeFileSync(path.join(md, 'web', 'tasks', 'OLD-2_empty.md'), '---\nstatus: done\n---\n');
-		assert.match(await run('show', 'web', 'OLD-2'), /^web\/OLD-2 {2}Empty\nFile: \S+OLD-2_empty\.md\nstatus: done\nMissing: description/);
+		assert.match(await run('show', 'web', 'OLD-2'), /^web\/OLD-2 {2}Empty\nFile: \S+OLD-2_empty\.md\nstatus: {2}done\nMissing: description/);
 		assert.equal(await run('set', 'web', 'OLD-2', 'description', 'Keep', 'the', 'old', 'one'), 'web/OLD-2: description = Keep the old one (added)');
 		assert.equal(readFileSync(path.join(md, 'web', 'tasks', 'OLD-2_empty.md'), 'utf8'), '---\nstatus: done\n---\n\nKeep the old one\n');
 		assert.equal(await run('set', 'web', 'TASK-1', 'Priority', 'high'), 'web/TASK-1: Priority = high (added)');
@@ -262,7 +266,7 @@ describe('task command', () => {
 		assert.equal(await run('set', 'web', 'TASK-1', 'Priority', 'low'), 'web/TASK-1: Priority = low (unchanged)');
 		assert.equal(await run('set', 'web', 'TASK-1', 'STATUS', 'done'), 'web/TASK-1: status = done');
 		const shown = await run('show', 'web', 'task-1');
-		assert.match(shown, /\nstatus: done\nPriority: low\n\nAdd login\n/);
+		assert.match(shown, /\nstatus: {2}done\nPriority: {2}low\n\nAdd login\n/);
 		assert.doesNotMatch(shown, /Missing/);
 		await assert.rejects(run('set', 'web', 'TASK-1', 'Created', 'x'), /set when the task is created/);
 		await assert.rejects(run('set', 'web', 'TASK-1', 'name', 'x'), /part of the file name/);
@@ -466,13 +470,12 @@ describe('archived tasks', () => {
 		await run('new', 'arch', 'Open', 'work');
 		await run('new', 'arch', '--status', 'archived', 'Old', 'work', 'on', 'caching');
 		const open = await run('list', 'arch');
-		assert.match(open, /^arch\/TASK-1 +todo +Open work/m);
+		assert.match(open, /^TASK-1 +todo +Open work/m);
 		assert.doesNotMatch(open, /TASK-2/);
 		assert.match(open, /^1 archived hidden \(task list arch --all\)$/m);
 		const all = await run('list', 'arch', '--all');
-		assert.match(all, /^arch\/TASK-2 +archived +Old work/m);
+		assert.match(all, /^TASK-2 +archived +Old work/m);
 		assert.doesNotMatch(all, /hidden/);
-		assert.match(await run('list', '--all'), /arch\/TASK-2/);
 		await run('status', 'arch', 'TASK-1', 'archived');
 		assert.match(await run('list', 'arch'), /^No open tasks in \S+; 2 archived hidden \(task list arch --all\)$/);
 		await assert.rejects(run('list', 'arch', '--every'), /Usage: task list/);
@@ -611,8 +614,8 @@ describe('epics', () => {
 		await run('set', 'ep', 'T-2', 'parent', 'E-1');
 		await run('status', 'ep', 'T-2', 'in-progress');
 		const epic = await run('show', 'ep', 'E-1');
-		assert.match(epic, /\ntype: epic\nTasks \(2\):\n {2}ep\/T-1 {2}todo {2}Login form\n {2}ep\/T-2 {2}in-progress {2}Signup page\nBy status: todo 1, in-progress 1\n\nLogin epic$/);
-		assert.match(await run('show', 'ep', 'T-1'), /\nparent: E-1\nParent: ep\/E-1 {2}Login epic\n/);
+		assert.match(epic, /\ntype: {2}epic\nTasks \(2\):\n {2}ep\/T-1 {2}todo {2}Login form\n {2}ep\/T-2 {2}in-progress {2}Signup page\nBy status: todo 1, in-progress 1\n\nLogin epic$/);
+		assert.match(await run('show', 'ep', 'T-1'), /\nparent: {2}E-1\nParent: ep\/E-1 {2}Login epic\n/);
 		assert.doesNotMatch(await run('show', 'ep', 'E-2'), /Parent|Tasks/);
 		writeFileSync(epFile('D-1_dangling.md'), '---\nstatus: todo\nparent: NOPE-1\n---\n\nDangling\n');
 		writeFileSync(epFile('D-2_under-task.md'), '---\nstatus: todo\nparent: E-2\n---\n\nUnder a task\n');
@@ -629,20 +632,20 @@ describe('epics', () => {
 
 	it('list: tasks under their epic, epics marked, dangling and archived flags', async () => {
 		const out = await run('list', 'ep');
-		assert.match(out, /^ep\/E-1 +todo +\[epic\] Login epic +\S+E-1_login-epic\.md\n {2}ep\/T-1 +todo +Login form +\S+T-1_login-form\.md\n {2}ep\/T-2 +in-progress +Signup page +\S+T-2_signup-page\.md$/m);
-		assert.match(out, /^ep\/D-1 +todo +Dangling {2}\(parent NOPE-1 missing\) {2}\S+D-1_dangling\.md$/m);
-		assert.match(out, /^ep\/D-2 +todo +Under a task {2}\(parent ep\/E-2 is not an epic\) {2}\S+$/m);
-		assert.match(out, /^ep\/E-3 +todo +\[epic\] Bad epic +\S+$/m);
-		assert.deepEqual(out.split('\n').map(l => l.split(/ +/)[0] || l.trim().split(/ +/)[0]), ['ep/D-1', 'ep/D-2', 'ep/E-1', 'ep/T-1', 'ep/T-2', 'ep/E-2', 'ep/E-3', 'ep/S-1']);
+		assert.match(out, /^\[epic\] E-1 +todo +Login epic\n {2}T-1 +todo +Login form\n {2}T-2 +in-progress +Signup page$/m);
+		assert.match(out, /^D-1 +todo +Dangling {2}\(parent NOPE-1 missing\)$/m);
+		assert.match(out, /^D-2 +todo +Under task {2}\(parent E-2 is not an epic\)$/m);
+		assert.match(out, /^\[epic\] E-3 +todo +Bad epic$/m);
+		assert.deepEqual(out.split('\n').map(l => l.replace('[epic] ', '').trim().split(/ +/)[0]), ['D-1', 'D-2', 'E-1', 'T-1', 'T-2', 'E-2', 'E-3', 'S-1']);
 		await run('status', 'ep', 'T-2', 'archived');
 		const hiddenChild = await run('list', 'ep');
 		assert.doesNotMatch(hiddenChild, /T-2/);
 		assert.match(hiddenChild, /^1 archived hidden \(task list ep --all\)$/m);
 		await run('status', 'ep', 'E-1', 'archived');
 		const hiddenEpic = await run('list', 'ep');
-		assert.match(hiddenEpic, /^ep\/T-1 +todo +Login form {2}\(epic ep\/E-1 is archived\) {2}\S+$/m);
+		assert.match(hiddenEpic, /^T-1 +todo +Login form {2}\(epic E-1 is archived\)$/m);
 		assert.match(hiddenEpic, /^2 archived hidden/m);
-		assert.match(await run('list', 'ep', '--all'), /^ep\/E-1 +archived +\[epic\] Login epic +\S+\n {2}ep\/T-1 +todo +Login form +\S+\n {2}ep\/T-2 +archived +Signup page +\S+$/m);
+		assert.match(await run('list', 'ep', '--all'), /^\[epic\] E-1 +archived +Login epic\n {2}T-1 +todo +Login form\n {2}T-2 +archived +Signup page$/m);
 		await run('status', 'ep', 'E-1', 'todo');
 	});
 
@@ -696,7 +699,7 @@ describe('epics: hand edits and several projects', () => {
 		put('ca', 'T-1_kid.md', '---\nstatus: todo\nPARENT: e-1\n---\n\nKid\n');
 		assert.match(await run('show', 'ca', 'E-1'), /\nTasks \(1\):\n {2}ca\/T-1 {2}todo {2}Kid\nBy status: todo 1\n/);
 		assert.match(await run('show', 'ca', 'T-1'), /\nParent: ca\/E-1 {2}Big\n/);
-		assert.match(await run('list', 'ca'), /^ca\/E-1 +todo +\[epic\] Big +\S+\n {2}ca\/T-1 +todo +Kid +\S+$/m);
+		assert.match(await run('list', 'ca'), /^\[epic\] E-1 +todo +Big\n {2}T-1 +todo +Kid$/m);
 		await assert.rejects(run('set', 'ca', 'E-1', 'type', 'task'), /ca\/E-1 has tasks: ca\/T-1/);
 		await assert.rejects(run('delete', 'ca', 'E-1'), /ca\/E-1 has tasks: ca\/T-1/);
 		assert.equal(await run('set', 'ca', 'T-1', 'parent', 'E-1'), 'ca/T-1: parent = E-1 (unchanged)');
@@ -717,26 +720,26 @@ describe('epics: hand edits and several projects', () => {
 		put('pb', 'T-2_stray.md', '---\nstatus: todo\nparent: E-1\n---\n\nStray\n');
 		assert.match(await run('show', 'pb', 'T-2'), /\nParent E-1 is missing;/);
 		assert.doesNotMatch(await run('show', 'pa', 'E-1'), /T-2/);
-		assert.match(await run('list', 'pb'), /^pb\/T-2 +todo +Stray {2}\(parent E-1 missing\)/m);
+		assert.match(await run('list', 'pb'), /^T-2 +todo +Stray {2}\(parent E-1 missing\)/m);
 		await run('new', 'pb', '--id', 'E-1', '--type', 'epic', 'Beta', 'epic');
 		assert.match(await run('show', 'pb', 'E-1'), /\nTasks \(1\):\n {2}pb\/T-2 /);
 		assert.doesNotMatch(await run('show', 'pa', 'E-1'), /Tasks \(/);
 		await run('delete', 'pa', 'E-1');
 	});
 
-	it('list over all projects: epics, children and orphans stay with their own project', async () => {
+	it('list of each project: epics, children and orphans stay with their own project', async () => {
 		isolate('pa', 'pb');
 		await run('new', 'pa', '--id', 'E-9', '--type', 'epic', 'Nine');
 		await run('new', 'pa', '--id', 'A-1', '--parent', 'e-9', 'Child a');
 		await run('new', 'pb', '--id', 'B-1', '--parent', 'E-1', 'Child b');
 		put('pa', 'O-1_orphan.md', '---\nstatus: todo\nparent: E-1\n---\n\nOrphan\n');
-		const names = (await run('list')).split('\n').map(l => l.trim().split(/ +/)[0]);
-		const at = (n: string) => names.indexOf(n);
-		assert.equal(at('pa/A-1'), at('pa/E-9') + 1);
-		assert.equal(at('pb/B-1'), at('pb/E-1') + 1);
-		assert.ok(at('pa/O-1') >= 0);
-		assert.ok(!(await run('list')).includes('  pa/O-1'));
-		assert.match(await run('list'), /pa\/O-1 .*\(parent E-1 missing\)/);
+		const ids = (out: string) => out.split('\n').map(l => l.replace('[epic] ', '').trim().split(/ +/)[0]);
+		const pa = await run('list', 'pa');
+		const pb = await run('list', 'pb');
+		assert.equal(ids(pa).indexOf('A-1'), ids(pa).indexOf('E-9') + 1);
+		assert.equal(ids(pb).indexOf('B-1'), ids(pb).indexOf('E-1') + 1);
+		assert.match(pa, /^O-1 +todo +Orphan {2}\(parent E-1 missing\)$/m);
+		assert.doesNotMatch(pb, /O-1/);
 	});
 
 	it('search and the plain task flow are unaffected', async () => {
@@ -745,5 +748,76 @@ describe('epics: hand edits and several projects', () => {
 		assert.doesNotMatch(readFileSync(file('pa', 'P-1_plain-searchable-thing.md'), 'utf8'), /type:|parent:/);
 		assert.match(await run('search', '--project', 'pa', 'searchable'), /pa\/P-1/);
 		assert.match(await run('show', 'pa', 'P-1'), /^(?!.*(Parent|Tasks))/s);
+	});
+});
+
+describe('styled output', () => {
+	const runStyled = async (...args: string[]): Promise<{blocks: StyledBlock[]; human: string[]; plain: string}> => {
+		const blocks: StyledBlock[] = [];
+		const ctx: CommandContext = {print: () => assert.fail('printed plain text'), printStyled: b => void blocks.push(...b), clear() {}, exit() {}};
+		await command.run(args, ctx);
+		const human = renderStyled(blocks, 80, {color: false}).replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+		return {blocks, human: human.split('\n'), plain: plainLines(blocks).join('\n')};
+	};
+	const write = (name: string, text: string) => {
+		const dir = path.join(md, 'sty', 'tasks');
+		mkdirSync(dir, {recursive: true});
+		writeFileSync(path.join(dir, name), text);
+	};
+
+	it('list: a head, a rule and aligned columns within the width; plain has neither', async () => {
+		write('E-1_login-epic.md', `---\nstatus: todo\ntype: epic\n---\n\nLogin epic ${'with words '.repeat(10)}\n`);
+		write('T-1_login-form.md', '---\nstatus: in-progress\nparent: E-1\n---\n\nLogin form\n');
+		write('T-2_dangling.md', '---\nstatus: done\nparent: NOPE-1\n---\n\nDangling\n');
+		const {human, plain} = await runStyled('list', 'sty');
+		const [head, line, ...rows] = human;
+		assert.match(head!, /^Task +Status +Name\s*$/);
+		assert.match(line!, /^─+$/);
+		assert.ok(line!.length <= 80);
+		const at = head!.indexOf('Status');
+		const name = head!.indexOf('Name');
+		for (const r of rows) {
+			assert.match(r.slice(at), /^(todo|in-progress|done) /, r);
+			assert.match(r.slice(name), /^\S/, r);
+			assert.doesNotMatch(r, /\.md/, r);
+		}
+		assert.ok(rows.some(r => r.includes('(parent NOPE-1 missing)')));
+		assert.doesNotMatch(plain, /─|^Task +Status/m);
+		assert.equal(plain, await run('list', 'sty'));
+		assert.match(plain, /^\[epic\] E-1 {2}todo {2}Login epic$/m);
+		assert.match(plain, /^ {2}T-1 {2}in-progress {2}Login form$/m);
+		assert.match(plain, /^T-2 {2}done {2}Dangling {2}\(parent NOPE-1 missing\)$/m);
+	});
+
+	it('show: the title row, then a rule; tasks of an epic aligned', async () => {
+		const {human, plain} = await runStyled('show', 'sty', 'E-1');
+		assert.equal(human[0], 'sty/E-1  Login epic');
+		assert.match(human[1]!, /^─{80}$/);
+		assert.ok(human.includes('Tasks (1):'));
+		assert.doesNotMatch(plain, /─/);
+		assert.equal(plain, await run('show', 'sty', 'E-1'));
+	});
+
+	it('search: the plain form is unchanged and hits are spaced only for people', async () => {
+		const {human, plain} = await runStyled('search', 'login');
+		assert.equal(plain, await run('search', 'login'));
+		assert.match(plain, /^Tasks matching login \(\d+ of \d+ tasks, best first\):\n1\. \S+ {2}.+ {2}\[\S+\] {2}\(score [\d.]+\)\n {3}\//);
+		assert.doesNotMatch(plain, /\n\n/);
+		assert.ok(human.includes(''));
+	});
+
+	it('confirmations keep their plain wording; new prints only the path', async () => {
+		isolate('sty');
+		const made = await runStyled('new', 'sty', '--id', 'N-1', 'Styled', 'new');
+		assert.match(made.human[0]!, /^Created \S+N-1_styled-new\.md$/);
+		assert.match(made.plain, /^\S+N-1_styled-new\.md$/);
+		const changed = await runStyled('status', 'sty', 'N-1', 'done');
+		assert.equal(changed.plain, 'sty/N-1: todo -> done');
+		assert.deepEqual(changed.blocks, [{kind: 'line', spans: [{text: 'sty/N-1', bold: true}, ': todo -> ', {text: 'done', tone: 'ok'}]}]);
+		assert.equal((await runStyled('set', 'sty', 'N-1', 'Priority', 'high')).plain, 'sty/N-1: Priority = high (added)');
+		assert.equal((await runStyled('unset', 'sty', 'N-1', 'Priority')).plain, 'sty/N-1: removed Priority');
+		assert.match((await runStyled('statuses', 'sty')).plain, /^Statuses of sty \(the default; .+\): todo, in-progress, done, archived$/);
+		assert.match((await runStyled('delete', 'sty', 'N-1')).plain, /^Deleted sty\/N-1 \(\S+N-1_styled-new\.md\)$/);
+		isolate();
 	});
 });
