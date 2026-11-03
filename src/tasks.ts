@@ -233,6 +233,7 @@ function replaceFile(file: string, text: string, mode: number): void {
 
 const FIELD_KEY_RE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/;
 const VALUE_MAX = 1000;
+const DESCRIPTION_MAX = 4048;
 const CONTROL = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f]');
 export const FIXED_FIELDS = ['project', 'created'];
 export const REQUIRED_FIELDS = ['status'];
@@ -262,7 +263,7 @@ export const extraFields = (text: string): Field[] => fieldsOf(text).filter(f =>
 export const formFields = (text: string): Field[] =>
 	extraFields(text).filter(f => !f.list && FIELD_KEY_RE.test(f.key) && f.value !== '' && !CONTROL.test(f.value) && f.value.length <= VALUE_MAX);
 
-export const isOneLine = (text: string): boolean => text !== '' && !CONTROL.test(text) && text.length <= VALUE_MAX;
+export const isOneLine = (text: string): boolean => text !== '' && !CONTROL.test(text) && text.length <= DESCRIPTION_MAX;
 
 export function checkFieldKey(v: string | undefined): string {
 	if (v === undefined || !FIELD_KEY_RE.test(v)) throw new Error('A field name starts with a letter and holds letters, digits and "-", up to 32 characters (e.g. Priority)');
@@ -271,15 +272,15 @@ export function checkFieldKey(v: string | undefined): string {
 	return v;
 }
 
-export function checkFieldValue(v: string | undefined, what = 'The value'): string {
+export function checkFieldValue(v: string | undefined, what = 'The value', max = VALUE_MAX): string {
 	const value = (v ?? '').trim();
 	if (value === '') throw new Error(`${what} must not be empty`);
 	if (CONTROL.test(value)) throw new Error(`${what} must be one line without control characters`);
-	if (value.length > VALUE_MAX) throw new Error(`${what} is longer than ${VALUE_MAX} characters`);
+	if (value.length > max) throw new Error(`${what} is longer than ${max} characters`);
 	return value;
 }
 
-export const checkDescription = (v: string | undefined): string => checkFieldValue(v, 'The description');
+export const checkDescription = (v: string | undefined): string => checkFieldValue(v, 'The description', DESCRIPTION_MAX);
 
 export function slugOf(text: string): string {
 	const words = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);

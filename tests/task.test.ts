@@ -9,7 +9,7 @@ import {createTaskCommand} from '../src/commands.js';
 import plugin, {depsFor} from '../src/index.js';
 import {distance, parseQuery, rank, summaryOf, words} from '../src/search.js';
 import {yamlValue} from '../src/frontmatter.js';
-import {checkFieldKey, checkFieldValue, checkStatus, checkTitle, descriptionOf, extraFields, fieldOf, fieldsOf, formFields, listTasks, nameIn, nextAutoId, parseFileName, slugOf, statusOf, type Task, template, withDescription, withField, withoutField, withStatus} from '../src/tasks.js';
+import {checkDescription, checkFieldKey, checkFieldValue, checkStatus, checkTitle, descriptionOf, extraFields, fieldOf, fieldsOf, formFields, listTasks, nameIn, nextAutoId, parseFileName, slugOf, statusOf, type Task, template, withDescription, withField, withoutField, withStatus} from '../src/tasks.js';
 import type {FormField, FormValue} from '../src/ui/kit.js';
 
 const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'task-')));
@@ -166,6 +166,8 @@ describe('properties', () => {
 		assert.throws(() => checkFieldValue('  '), /must not be empty/);
 		assert.throws(() => checkFieldValue('a\nb'), /one line/);
 		assert.throws(() => checkFieldValue('x'.repeat(1001)), /longer than 1000/);
+		assert.equal(checkDescription('x'.repeat(4048)).length, 4048);
+		assert.throws(() => checkDescription('x'.repeat(4049)), /description is longer than 4048/);
 		assert.equal(slugOf('Fix the login redirect, after logout!'), 'fix-the-login-redirect-after-logout');
 		assert.equal(slugOf('Виправити логін'), '');
 	});
