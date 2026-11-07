@@ -85,7 +85,7 @@ Assistant policies: `edit` is `deny` (a form is for the user), `delete` and `set
 
 - **Cancel** (or Esc): closes the form, nothing is written.
 - **Save**: checks the fields and writes the task; a problem (e.g. an empty description or a taken id) is shown and the form stays. Emptying an extra field removes it. A description of several lines is shown read-only (`<first line> (N lines: edit the file)`) and kept as it is.
-- **Save and discuss**: saves, then runs `claude send Let's discuss task <project>/<id> (<path>). …` in the console, which puts the message into the open chat (or starts one). Without the claude module it prints the message to send instead.
+- **Save and discuss**: saves, then runs `chat send Let's discuss task <project>/<id> (<path>). …` in the console, which puts the message into the open chat (or starts one). Without the chat module it prints the message to send instead.
 
 ↑/↓ or Tab move between rows, typing edits the field, Enter goes to the next row or presses the chosen button, ←/→ choose a button.
 

@@ -791,7 +791,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		if (saved.action !== 'discuss') return;
 		const message = discussMessage(label(saved.task), saved.task.file);
 		const runLine = (host as {runLine?: unknown} | undefined)?.runLine;
-		const sent = typeof runLine === 'function' && runLine.call(host, `claude send ${message}`) === true;
+		const sent = typeof runLine === 'function' && runLine.call(host, `chat send ${message}`) === true;
 		log.info('task discuss', {sent});
 		if (!sent) ctx.print(`No chat to discuss it in (the claude module is missing). Ask the assistant: ${message}`);
 	};

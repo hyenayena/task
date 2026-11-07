@@ -380,7 +380,7 @@ describe('task form', () => {
 		assert.deepEqual(r.printed, [`Created web/TASK-3: ${file}`]);
 		assert.equal(readFileSync(file, 'utf8'), '---\nname: Ship the task form\nproject: web\ncreated: 2026-10-23\nstatus: todo\nPriority: high\n---\n\nShip the task form\n');
 		assert.equal(r.lines.length, 1);
-		assert.match(r.lines[0]!, /^claude send Let's discuss task web\/TASK-3 \(\S+TASK-3_ship-the-task-form\.md\)\./);
+		assert.match(r.lines[0]!, /^chat send Let's discuss task web\/TASK-3 \(\S+TASK-3_ship-the-task-form\.md\)\./);
 	});
 
 	it('new: picks among several isolated projects; cancel creates nothing; without claude it says how to discuss', async () => {
