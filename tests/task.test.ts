@@ -250,6 +250,7 @@ describe('task command', () => {
 		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress', 'reading works without isolation');
 		isolate('web');
 		await assert.rejects(run('status', 'web', 'TASK-404'), /web has no task TASK-404/);
+		await assert.rejects(run('status', 'heha', 'TASK-2'), /There is no project heha; "project list" shows them/);
 		await assert.rejects(run('status', 'web', 'TASK-2', 'Done!'), /one kebab-case word/);
 		await assert.rejects(run('status', 'web'), /Usage: task status/);
 		await assert.rejects(run('status', 'web', 'TASK-9', 'done'), /not a regular file|has no task/);

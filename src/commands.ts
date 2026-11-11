@@ -27,6 +27,7 @@ import {
 	isOneLine,
 	isExtraKey,
 	isEpicText,
+	hasProject,
 	listTasks,
 	nameIn,
 	nextAutoId,
@@ -361,6 +362,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const findTask = (project: string, rawId: string | undefined): Task => {
 		const id = checkId(rawId ?? '');
 		const task = listTasks(deps.md, project).find(t => t.id.toLowerCase() === id.toLowerCase());
+		if (!task && !hasProject(deps.md, project)) throw new Error(`There is no project ${project}; "project list" shows them`);
 		if (!task) throw new Error(`${project} has no task ${id}; "task list ${project}" lists them`);
 		return task;
 	};

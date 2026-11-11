@@ -58,6 +58,8 @@ function realEntries(dir: string, kind: 'dir' | 'file'): string[] {
 	}
 }
 
+export const hasProject = (md: string, project: string): boolean => realEntries(md, 'dir').includes(project);
+
 export function listTasks(md: string, project?: string): Task[] {
 	const projects = project === undefined ? realEntries(md, 'dir').filter(isProject) : [project];
 	const out: Task[] = [];
