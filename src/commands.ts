@@ -164,7 +164,7 @@ const SUBCOMMANDS: Subcommand[] = [
 		name: 'search',
 		usage: SEARCH_USAGE,
 		description: 'Find tasks in every project (archived too) by id, name or text',
-		args: [{name: 'query', description: 'An id, words, or a "quoted phrase"'}],
+		args: [{name: 'query', description: 'An id, words, or a phrase (an argument with spaces, e.g. "two words")'}],
 		options: [
 			{name: '--project', value: '<project>', description: 'Put the tasks of this project first'},
 			{name: '--status', value: '<status>', description: 'Only tasks with this status'},
@@ -172,7 +172,7 @@ const SUBCOMMANDS: Subcommand[] = [
 		],
 		notes: [
 			'By id: web/TASK-1, TASK-1 or 1',
-			'Words match the name and text; word forms and typos count less; "quoted phrases" must appear',
+			'Words match the name and text; word forms and typos count less; a quoted argument with spaces is a phrase that must appear (a single required word: \'"login"\')',
 			'Shows the matching lines (L<n>)',
 		],
 		agent: 'safe',
@@ -205,19 +205,6 @@ const cut = (text: string, max: number): string => (text.length > max ? `${text.
 
 type NewSpec = {project?: string; id?: string; name?: string; status?: string; type?: string; parent?: string; description?: string};
 
-function readQuoted(args: string[], at: number): {value: string; last: number} {
-	const first = args[at];
-	if (first === undefined) throw new Error(`--name needs a value. Usage: ${NEW_USAGE}`);
-	if (!first.startsWith('"')) return {value: first, last: at};
-	for (let j = at; j < args.length; j++) {
-		const word = args[j] as string;
-		if ((j > at || word.length > 1) && word.endsWith('"')) {
-			return {value: args.slice(at, j + 1).join(' ').slice(1, -1), last: j};
-		}
-	}
-	throw new Error('The name has no closing quote, e.g. --name "Fix login bug"');
-}
-
 function parseNew(args: string[]): NewSpec {
 	const spec: NewSpec = {};
 	let i = 0;
@@ -229,15 +216,10 @@ function parseNew(args: string[]): NewSpec {
 			break;
 		}
 		if (!arg.startsWith('--')) break;
-		if (arg === '--name') {
-			const quoted = readQuoted(args, i + 1);
-			spec.name = checkTitle(quoted.value);
-			i = quoted.last;
-			continue;
-		}
 		const value = args[++i];
 		if (value === undefined) throw new Error(`${arg} needs a value. Usage: ${NEW_USAGE}`);
-		if (arg === '--id') spec.id = checkId(value);
+		if (arg === '--name') spec.name = checkTitle(value);
+		else if (arg === '--id') spec.id = checkId(value);
 		else if (arg === '--status') spec.status = checkStatus(value);
 		else if (arg === '--type') spec.type = checkType(value);
 		else if (arg === '--parent') spec.parent = checkId(value);
@@ -690,7 +672,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			else rest.push(arg);
 		}
 		if (rest.length === 0) throw new Error(`Usage: ${SEARCH_USAGE}`);
-		const query = rest.join(' ');
+		const query = rest.map(w => (/\s/u.test(w) ? `"${w.replace(/"/g, '')}"` : w)).join(' ');
 		const texts = listTasks(deps.md)
 			.slice(0, SEARCH_FILES_MAX)
 			.flatMap(task => {

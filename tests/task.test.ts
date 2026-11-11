@@ -198,7 +198,7 @@ describe('task command', () => {
 
 	it('refuses a taken number, a missing description and bad input', async () => {
 		await assert.rejects(run('new', 'web', '--id', 'tech-12345', 'other'), /already has task tech-12345/);
-		await assert.rejects(run('new', 'web', '--name', '"Fix', 'login', 'x'), /no closing quote/);
+		await assert.rejects(run('new', 'web', '--name'), /--name needs a value/);
 		await assert.rejects(run('new', 'web', '--id', 'A_B', 'x'), /task number/);
 		await assert.rejects(run('new', 'web', '--status', 'Done!', 'x'), /one kebab-case word/);
 		await assert.rejects(run('new', 'web', '--color', 'red', 'x'), /Unknown option --color/);
@@ -232,6 +232,9 @@ describe('task command', () => {
 		assert.doesNotMatch(out, /TASK-9/);
 		assert.match(await run('search', 'database'), /No tasks match database among \d+ tasks\./);
 		await assert.rejects(run('search', '--project', 'web'), /Usage: task search/);
+		assert.match(await run('search', 'OAuth client'), /^1\. web\/TASK-1 /m);
+		assert.match(await run('search', 'client OAuth'), /No tasks match "client OAuth"/);
+		assert.match(await run('search', '"database"'), /No tasks match "database"/);
 	});
 
 	it('shows and sets the status; setting needs an isolated project', async () => {
@@ -454,20 +457,21 @@ describe('task form', () => {
 describe('task names with spaces', () => {
 	it('keeps the name in the properties and its kebab-case form in the file name', async () => {
 		isolate('names');
-		const file = await run('new', 'names', '--name', '"Fix', 'Login', 'bug"', '--status', 'done', 'The', 'login', 'fails');
+		const file = await run('new', 'names', '--name', 'Fix Login bug', '--status', 'done', 'The', 'login', 'fails');
 		assert.equal(file, path.join(md, 'names', 'tasks', 'TASK-1_fix-login-bug.md'));
 		assert.equal(readFileSync(file, 'utf8'), '---\nname: Fix Login bug\nproject: names\ncreated: 2026-10-23\nstatus: done\n---\n\nThe login fails\n');
 		assert.match(await run('show', 'names', 'TASK-1'), /^names\/TASK-1  Fix Login bug\n/);
 		assert.match(await run('search', 'login'), /names\/TASK-1  Fix Login bug  \[done\]  \(score/);
 		assert.equal(await run('new', 'names', '--name', 'Single', 'x'), path.join(md, 'names', 'tasks', 'TASK-2_single.md'));
-		assert.equal(await run('new', 'names', '--name', '"Quoted"', 'x'), path.join(md, 'names', 'tasks', 'TASK-3_quoted.md'));
+		assert.equal(await run('new', 'names', '--name', 'Quoted', 'x'), path.join(md, 'names', 'tasks', 'TASK-3_quoted.md'));
+		assert.equal(await run('new', 'names', '--name', 'Two words', 'x'), path.join(md, 'names', 'tasks', 'TASK-4_two-words.md'));
 	});
 
 	it('names the file from the description when the name has no latin words', async () => {
-		const file = await run('new', 'names', '--name', '"Виправити', 'логін"', 'Fix', 'the', 'login');
-		assert.equal(file, path.join(md, 'names', 'tasks', 'TASK-4_fix-the-login.md'));
+		const file = await run('new', 'names', '--name', 'Виправити логін', 'Fix', 'the', 'login');
+		assert.equal(file, path.join(md, 'names', 'tasks', 'TASK-5_fix-the-login.md'));
 		assert.match(readFileSync(file, 'utf8'), /^---\nname: Виправити логін\n/);
-		assert.equal(await run('new', 'names', '--name', '"Тест"', 'Тест'), path.join(md, 'names', 'tasks', 'TASK-5_task.md'));
+		assert.equal(await run('new', 'names', '--name', 'Тест', 'Тест'), path.join(md, 'names', 'tasks', 'TASK-6_task.md'));
 	});
 
 	it('shows the file name when a task has no name property', async () => {
