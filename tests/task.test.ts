@@ -9,7 +9,7 @@ import {createTaskCommand} from '../src/commands.js';
 import plugin, {depsFor} from '../src/index.js';
 import {distance, parseQuery, rank, summaryOf, words} from '../src/search.js';
 import {yamlValue} from '../src/frontmatter.js';
-import {checkDescription, checkFieldKey, checkFieldValue, checkStatus, checkTitle, descriptionOf, extraFields, fieldOf, fieldsOf, formFields, listTasks, nameIn, nextAutoId, parseFileName, slugOf, statusOf, type Task, template, withDescription, withField, withoutField, withStatus} from '../src/tasks.js';
+import {checkDescription, checkFieldKey, checkFieldValue, checkStatus, checkTitle, descriptionOf, extraFields, fieldOf, fieldsOf, formFields, listTasks, looksLikeId, nameIn, nextAutoId, parseFileName, slugOf, statusOf, type Task, template, withDescription, withField, withoutField, withStatus} from '../src/tasks.js';
 import type {FormField, FormValue} from '../src/ui/kit.js';
 
 const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'task-')));
@@ -217,9 +217,25 @@ describe('task command', () => {
 		assert.doesNotMatch(one, /web|\.md|OAuth/);
 		assert.match(await run('list', 'web'), /^TASK-1 +todo +\S/m);
 		assert.match(await run('list', 'none'), /No tasks in/);
-		await assert.rejects(run('list'), failure('usage', /Usage: task list <project> \[--all\]/));
-		await assert.rejects(run('list', '--all'), failure('usage', /Usage: task list <project>/));
-		await assert.rejects(run('list', 'api', 'web'), failure('usage', /Usage: task list <project>/));
+		await assert.rejects(run('list', 'api', 'web'), failure('usage', /Usage: task list \[project\] \[--all\]/));
+	});
+
+	it('lists the isolated projects, or every project, each under its name', async () => {
+		isolate('api');
+		const api = await run('list');
+		assert.match(api, /^api$/m);
+		assert.match(api, /^TECH-7 /m);
+		assert.doesNotMatch(api, /^web$/m);
+		assert.match(await run('list', '--all'), /^api$/m);
+		isolate('api', 'web');
+		const both = await run('list');
+		assert.match(both, /^api$/m);
+		assert.match(both, /^web$/m);
+		isolate();
+		const every = await run('list');
+		assert.match(every, /^api$/m);
+		assert.match(every, /^web$/m);
+		isolate('api');
 	});
 
 	it('searches every project, skipping symlinked files', async () => {
@@ -364,6 +380,152 @@ const formRun = async (args: string[], presses: Press[], opts: {runLine?: (line:
 };
 const setValue = (id: string, value: string) => (values: FormValue[]) => values.map(v => (v.id === id ? {...v, value} : v));
 const addField = (key: string, value: string) => (values: FormValue[]) => [...values, {id: `added:${values.length}`, label: key, value}];
+
+describe('task targets', () => {
+	it('names a task as project/id, project id or just id', async () => {
+		isolate();
+		assert.equal(await run('show', 'web/TASK-2'), await run('show', 'web', 'TASK-2'));
+		await assert.rejects(run('status', 'web/TASK-2', 'done'), failure('not-isolated', /web is not isolated/));
+		isolate('web');
+		assert.equal(await run('status', 'web/TASK-2', 'done'), 'web/TASK-2: in-progress -> done');
+		assert.equal(await run('status', 'TASK-2'), 'web/TASK-2: done');
+		assert.equal(await run('status', 'TASK-2', 'in-progress'), 'web/TASK-2: done -> in-progress');
+		assert.equal(await run('set', 'TASK-2', 'Priority', 'high'), 'web/TASK-2: Priority = high (added)');
+		assert.equal(await run('unset', 'TASK-2', 'Priority'), 'web/TASK-2: removed Priority');
+		await run('new', 'web', '--id', 'GONE-1', 'x');
+		assert.match(await run('delete', 'GONE-1'), /^Deleted web\/GONE-1/);
+	});
+
+	it('refuses an id without exactly one isolated project', async () => {
+		isolate();
+		await assert.rejects(run('status', 'TASK-2'), failure('usage', /No project is isolated/));
+		isolate('web', 'api');
+		await assert.rejects(run('status', 'TASK-2'), failure('usage', /Several projects are isolated \(web, api\)/));
+	});
+
+	it('lets a project named like an id win, and keeps a misspelled project not-found', async () => {
+		isolate('web');
+		mkdirSync(path.join(md, 'LOG-1', 'tasks'), {recursive: true});
+		writeFileSync(path.join(md, 'LOG-1', 'tasks', 'TASK-5_log.md'), '---\nname: log\nstatus: todo\n---\n\nx\n');
+		assert.equal(await run('status', 'LOG-1', 'TASK-5'), 'LOG-1/TASK-5: todo');
+		await assert.rejects(run('status', 'wbe', 'TASK-2'), failure('not-found', /There is no project wbe/));
+	});
+
+	it('rejects bad targets', async () => {
+		isolate('web');
+		await assert.rejects(run('show', 'web/'), failure('invalid', /task number/));
+		await assert.rejects(run('show', '../x/TASK-1'), failure('invalid', /Invalid project name/));
+		await assert.rejects(run('show', 'web'), failure('usage', /Usage: task show \[project\] <id>/));
+		await assert.rejects(run('show'), failure('usage', /Usage: task show/));
+	});
+
+	it('edit resolves the target', async () => {
+		isolate('web');
+		await assert.rejects(run('edit', 'TASK-404'), failure('not-found', /web has no task TASK-404/));
+	});
+
+	it('tells ids from project names', () => {
+		for (const v of ['TASK-12', 'LOG-1', 'UI-0']) assert.equal(looksLikeId(v), true, v);
+		for (const v of ['web', 'w6w', 'smart-home']) assert.equal(looksLikeId(v), false, v);
+	});
+});
+
+describe('task targets: input validation', () => {
+	const code = (n: number) => String.fromCharCode(n);
+	const control = new RegExp(`[${code(0)}-${code(8)}${code(11)}-${code(31)}${code(127)}]`);
+
+	it('the slash form splits at the first slash and checks both parts', async () => {
+		isolate('web');
+		for (const bad of ['a/../b', 'web/x/y', '/TASK-1', 'web//TASK-1', 'web/../TASK-2', '../web/TASK-2', 'web/TASK-2/', 'we b/TASK-2']) {
+			await assert.rejects(run('show', bad), failure('invalid', /Invalid project name|task number/), bad);
+		}
+		await assert.rejects(run('show', 'web/TASK-2', 'TASK-3'), failure('usage', /Usage: task show/));
+	});
+
+	it('echoes no control characters and stays short for long, odd or unicode words', async () => {
+		isolate('web');
+		const words = [`web/${code(27)}[31mTASK-1`, `${code(27)}[2J/TASK-1`, `TASK-1${code(7)}`, 'x'.repeat(5000), `${'A'.repeat(31)}-${'9'.repeat(5000)}`, 'проект/TASK-1', 'web/ТАСК-1'];
+		for (const w of words) {
+			for (const sub of ['show', 'status', 'set', 'unset', 'delete', 'edit']) {
+				const err = await run(sub, w).then(
+					() => undefined,
+					(e: Error) => e,
+				);
+				if (err === undefined) continue;
+				assert.ok(err.message.length < 400, `${sub} ${w.slice(0, 12)}: ${err.message.length}`);
+				assert.doesNotMatch(err.message, control, `${sub} ${w.slice(0, 12)}`);
+			}
+		}
+	});
+
+	it('a word that is not an id is a project: alone it needs an id', async () => {
+		isolate('web');
+		for (const w of ['x'.repeat(500), 'проект', 'TASK', '123']) {
+			await assert.rejects(run('status', w), failure('usage', /Usage: task status \[project\] <id>/), w);
+		}
+	});
+
+	it('the id usage errors name <project>/<id>', async () => {
+		isolate();
+		await assert.rejects(run('show', 'TASK-2'), failure('usage', /No project is isolated.*<project>\/TASK-2/));
+		isolate('web', 'api');
+		await assert.rejects(run('delete', 'TASK-2'), failure('usage', /Several projects are isolated \(web, api\).*<project>\/TASK-2/));
+		isolate('web');
+	});
+
+	it('refuses extra or missing arguments after the target, per subcommand', async () => {
+		isolate('web');
+		const usage = (sub: string) => failure('usage', new RegExp(`Usage: task ${sub}`));
+		await assert.rejects(run('show', 'TASK-2', 'x'), usage('show'));
+		await assert.rejects(run('show', 'web', 'TASK-2', 'x'), usage('show'));
+		await assert.rejects(run('delete', 'TASK-2', 'x'), usage('delete'));
+		await assert.rejects(run('delete', 'web/TASK-2', 'x'), usage('delete'));
+		await assert.rejects(run('edit', 'TASK-2', 'x'), usage('edit'));
+		await assert.rejects(run('unset', 'TASK-2'), usage('unset'));
+		await assert.rejects(run('unset', 'TASK-2', 'A', 'B'), usage('unset'));
+		await assert.rejects(run('unset', 'web', 'TASK-2', 'A', 'B'), usage('unset'));
+		await assert.rejects(run('set', 'TASK-2', 'Priority'), usage('set'));
+		await assert.rejects(run('set', 'web', 'TASK-2', 'Priority'), usage('set'));
+		await assert.rejects(run('status', 'TASK-2', 'done', 'x'), usage('status'));
+		await assert.rejects(run('status', 'web', 'TASK-2', 'done', 'x'), usage('status'));
+	});
+
+	it('status: a bare id takes the status as the next word, a project takes the id', async () => {
+		isolate('web');
+		assert.equal(await run('status', 'TASK-2', 'todo'), 'web/TASK-2: in-progress -> todo');
+		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: todo');
+		assert.equal(await run('status', 'TASK-2', 'done'), 'web/TASK-2: todo -> done');
+		assert.equal(await run('status', 'web', 'TASK-2', 'in-progress'), 'web/TASK-2: done -> in-progress');
+		await assert.rejects(run('status', 'TASK-2', 'Not A Status'), error => (error as {kind?: string}).kind !== undefined);
+		assert.equal(await run('status', 'web/TASK-2'), 'web/TASK-2: in-progress');
+	});
+
+	it('set joins the value words with a bare id and with a project', async () => {
+		isolate('web');
+		assert.equal(await run('set', 'TASK-2', 'Note', 'a', 'b', 'c'), 'web/TASK-2: Note = a b c (added)');
+		assert.equal(await run('set', 'web', 'TASK-2', 'Note', 'd', 'e'), 'web/TASK-2: Note = d e');
+		assert.equal(await run('unset', 'web/TASK-2', 'Note'), 'web/TASK-2: removed Note');
+	});
+
+	it('ids match without regard to case in the bare and slash forms', async () => {
+		isolate('web');
+		assert.equal(await run('status', 'task-2'), 'web/TASK-2: in-progress');
+		assert.equal(await run('status', 'web/task-2'), 'web/TASK-2: in-progress');
+	});
+
+	it('unknown ids stay not-found in every form', async () => {
+		isolate('web');
+		await assert.rejects(run('show', 'TASK-404'), failure('not-found', /web has no task TASK-404/));
+		await assert.rejects(run('show', 'web/TASK-404'), failure('not-found', /web has no task TASK-404/));
+	});
+
+	it('list takes a project word only, never a flag or a slash form', async () => {
+		isolate('web');
+		await assert.rejects(run('list', '--bogus'), failure('usage', /Usage: task list/));
+		await assert.rejects(run('list', '../x'), failure('invalid', /Invalid project name/));
+		await assert.rejects(run('list', 'web/TASK-2'), failure('invalid', /Invalid project name/));
+	});
+});
 
 describe('task form', () => {
 	it('new: fills a task, shows the save error, then saves and discusses it in the chat', async () => {

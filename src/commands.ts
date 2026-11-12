@@ -29,6 +29,7 @@ import {
 	isEpicText,
 	hasProject,
 	listTasks,
+	looksLikeId,
 	nameIn,
 	nextAutoId,
 	parentOf,
@@ -62,15 +63,15 @@ export type TaskDeps = {
 };
 
 const NEW_USAGE = 'task new [project] [--id <id>] [--name <name>] [--status <status>] [--type task|epic] [--parent <epic-id>] [description…]';
-const STATUS_USAGE = 'task status <project> <id> [status]';
+const STATUS_USAGE = 'task status [project] <id> [status]';
 const STATUSES_USAGE = 'task statuses <project>';
 const SET_STATUSES_USAGE = 'task set-statuses <project> <status…>';
-const SHOW_USAGE = 'task show <project> <id>';
-const EDIT_USAGE = 'task edit <project> <id>';
-const SET_USAGE = 'task set <project> <id> <field> <value…>';
-const UNSET_USAGE = 'task unset <project> <id> <field>';
-const DELETE_USAGE = 'task delete <project> <id>';
-const LIST_USAGE = 'task list <project> [--all]';
+const SHOW_USAGE = 'task show [project] <id>';
+const EDIT_USAGE = 'task edit [project] <id>';
+const SET_USAGE = 'task set [project] <id> <field> <value…>';
+const UNSET_USAGE = 'task unset [project] <id> <field>';
+const DELETE_USAGE = 'task delete [project] <id>';
+const LIST_USAGE = 'task list [project] [--all]';
 const SEARCH_USAGE = 'task search [--project <project>] [--status <status>] [--limit <n>] <query>…';
 const LINE = 'task list | new | show | edit | set | unset | status | statuses | set-statuses | delete | search (task help for details)';
 const USAGE = 'task <subcommand>';
@@ -80,6 +81,7 @@ const SEARCH_LIMIT_MAX = 50;
 const LIST_TEXT_MAX = 60;
 
 const PROJECT = {name: 'project', description: 'A project in the docs hub'};
+const PROJECT_OPT = {name: 'project', description: 'The project (default: the one isolated project); or <project>/<id> as one word'};
 const ID = {name: 'id', description: 'The task id (TASK-1); case does not matter'};
 
 const SUBCOMMANDS: Subcommand[] = [
@@ -87,8 +89,8 @@ const SUBCOMMANDS: Subcommand[] = [
 		name: 'list',
 		aliases: ['ls'],
 		usage: LIST_USAGE,
-		description: 'List the tasks of a project',
-		args: [PROJECT],
+		description: 'List the tasks of a project, or of the isolated ones',
+		args: [{name: 'project', description: 'The project (default: the isolated ones, or every project when none is)'}],
 		options: [{name: '--all', description: `Also the archived ones (status ${ARCHIVED_STATUS})`}],
 		agent: 'safe',
 	},
@@ -114,13 +116,13 @@ const SUBCOMMANDS: Subcommand[] = [
 		],
 		agent: 'safe',
 	},
-	{name: 'show', usage: SHOW_USAGE, description: "Show a task's fields and file", args: [PROJECT, ID], agent: 'safe'},
-	{name: 'edit', usage: EDIT_USAGE, description: 'Edit a task in a form (in the app)', args: [PROJECT, ID], agent: 'deny'},
+	{name: 'show', usage: SHOW_USAGE, description: "Show a task's fields and file", args: [PROJECT_OPT, ID], agent: 'safe'},
+	{name: 'edit', usage: EDIT_USAGE, description: 'Edit a task in a form (in the app)', args: [PROJECT_OPT, ID], agent: 'deny'},
 	{
 		name: 'set',
 		usage: SET_USAGE,
 		description: 'Set a field of a task: status, description or any other',
-		args: [PROJECT, ID, {name: 'field', description: 'The field name'}, {name: 'value', description: 'The value: the rest of the line'}],
+		args: [PROJECT_OPT, ID, {name: 'field', description: 'The field name'}, {name: 'value', description: 'The value: the rest of the line'}],
 		notes: [
 			'type epic|task: an epic groups tasks; it cannot have a parent',
 			'parent <epic-id>: put the task under an epic of the same project',
@@ -132,14 +134,14 @@ const SUBCOMMANDS: Subcommand[] = [
 		name: 'unset',
 		usage: UNSET_USAGE,
 		description: 'Remove a field you added, the parent or the type (status and description are required)',
-		args: [PROJECT, ID, {name: 'field', description: 'The field name'}],
+		args: [PROJECT_OPT, ID, {name: 'field', description: 'The field name'}],
 		agent: 'safe',
 	},
 	{
 		name: 'status',
 		usage: STATUS_USAGE,
 		description: "Show the status of a task, or set it to one of the project's statuses",
-		args: [PROJECT, ID, {name: 'status', description: 'The new status'}],
+		args: [PROJECT_OPT, ID, {name: 'status', description: 'The new status'}],
 		agent: 'safe',
 	},
 	{name: 'statuses', usage: STATUSES_USAGE, description: 'The statuses a task of the project may have', args: [PROJECT], agent: 'safe'},
@@ -156,7 +158,7 @@ const SUBCOMMANDS: Subcommand[] = [
 		aliases: ['rm'],
 		usage: DELETE_USAGE,
 		description: 'Delete a task file',
-		args: [PROJECT, ID],
+		args: [PROJECT_OPT, ID],
 		notes: ['An epic with tasks is refused; unset their parent first'],
 		agent: 'confirm',
 	},
@@ -185,6 +187,7 @@ const NOTES = [
 	'The description is the Markdown after them',
 	'A task with "type: epic" is an epic; its tasks name it in "parent"',
 	'Tasks are created and changed only in isolated projects ("project isolate <name>")',
+	'A task is named <project> <id>, <project>/<id>, or just <id> when exactly one project is isolated; a project name wins over an id',
 ];
 
 const label = (t: Task): string => `${t.project}/${t.id}`;
@@ -313,15 +316,23 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const list = (args: string[]): StyledBlock[] => {
 		const all = args.includes('--all');
 		const rest = args.filter(a => a !== '--all');
-		if (rest.length !== 1 || rest[0]!.startsWith('--')) throw commandError('usage', `Usage: ${LIST_USAGE}`);
-		const project = checkProject(rest[0]!);
+		if (rest.length > 1 || rest[0]?.startsWith('--')) throw commandError('usage', `Usage: ${LIST_USAGE}`);
+		if (rest.length === 1) return listOne(checkProject(rest[0]), all, false);
+		let projects = deps.isolated();
+		if (projects.length === 0) projects = [...new Set(listTasks(deps.md).map(t => t.project))].sort();
+		if (projects.length === 0) return [line(`No tasks in ${deps.md}`)];
+		return projects.flatMap((p, i) => [...(i > 0 ? [line()] : []), ...listOne(p, all, true)]);
+	};
+
+	const listOne = (project: string, all: boolean, titled: boolean): StyledBlock[] => {
 		const where = tasksDir(deps.md, project);
+		const head = titled ? [line(span(project, {bold: true}))] : [];
 		const found = listTasks(deps.md, project).map(t => ({task: t, ...info(t)}));
-		if (found.length === 0) return [line(`No tasks in ${where}`)];
+		if (found.length === 0) return [...head, line(`No tasks in ${where}`)];
 		const shown = all ? found : found.filter(r => r.status !== ARCHIVED_STATUS);
 		const hidden = found.length - shown.length;
 		const note = hidden > 0 ? `${hidden} archived hidden (task list ${project} --all)` : '';
-		if (shown.length === 0) return [line(`No open tasks in ${where}; ${note}`)];
+		if (shown.length === 0) return [...head, line(`No open tasks in ${where}; ${note}`)];
 		const tone = statusToner();
 		const rows = ordered(found, shown).map(({row: r, indent, flag}) => [
 			[indent, ...(r.epic ? [span('[epic] ', {tone: 'accent', bold: true})] : []), span(r.task.id, {tone: 'accent'})],
@@ -329,7 +340,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			r.text,
 			span(flag, {tone: 'warn'}),
 		]);
-		return [table(rows, {head: ['Task', 'Status', 'Name', ''], flex: 2}), ...(note === '' ? [] : [line(span(note, {tone: 'muted'}))])];
+		return [...head, table(rows, {head: ['Task', 'Status', 'Name', ''], flex: 2}), ...(note === '' ? [] : [line(span(note, {tone: 'muted'}))])];
 	};
 
 	const requireIsolated = (project: string) => {
@@ -347,6 +358,25 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		if (!task && !hasProject(deps.md, project)) throw commandError('not-found', `There is no project ${project}; "project list" shows them`);
 		if (!task) throw commandError('not-found', `${project} has no task ${id}; "task list ${project}" lists them`);
 		return task;
+	};
+
+	const target = (args: string[], usage: string): {project: string; id: string; rest: string[]} => {
+		const first = args[0];
+		if (first === undefined) throw commandError('usage', `Usage: ${usage}`);
+		const after = args.slice(1);
+		const slash = first.indexOf('/');
+		if (slash >= 0) return {project: checkProject(first.slice(0, slash)), id: checkId(first.slice(slash + 1)), rest: after};
+		const isolated = deps.isolated();
+		if (hasProject(deps.md, first) || isolated.includes(first) || !looksLikeId(first)) {
+			if (after[0] === undefined) throw commandError('usage', `Usage: ${usage}`);
+			return {project: checkProject(first), id: after[0], rest: after.slice(1)};
+		}
+		const shown = first.slice(0, 64);
+		if (isolated.length === 0) throw commandError('usage', `No project is isolated; name the project: ${usage}, e.g. <project>/${shown}`);
+		if (isolated.length > 1) {
+			throw commandError('usage', `Several projects are isolated (${isolated.join(', ')}); name one: <project>/${shown} (${usage})`);
+		}
+		return {project: isolated[0] as string, id: first, rest: after};
 	};
 
 	const textOf = (task: Task): string => {
@@ -803,9 +833,9 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	};
 
 	const edit = async (args: string[], ctx: CommandContext): Promise<void> => {
-		if (args.length !== 2) throw commandError('usage', `Usage: ${EDIT_USAGE}`);
-		const project = checkProject(args[0]);
-		const task = findTask(project, args[1]);
+		const {project, id, rest} = target(args, EDIT_USAGE);
+		exactly(rest, 0, EDIT_USAGE);
+		const task = findTask(project, id);
 		if (!canShowForm(ctx)) throw commandError('usage', `"task edit" opens a form in the app; change fields with "${SET_USAGE}" and "${UNSET_USAGE}"`);
 		await openForm(ctx, project, task, {});
 	};
@@ -834,24 +864,32 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					return;
 				case 'new':
 					return newTask(rest, ctx);
-				case 'show':
-					exactly(rest, 2, SHOW_USAGE);
-					printStyled(ctx, show(checkProject(rest[0]), rest[1] as string));
+				case 'show': {
+					const t = target(rest, SHOW_USAGE);
+					exactly(t.rest, 0, SHOW_USAGE);
+					printStyled(ctx, show(t.project, t.id));
 					return;
+				}
 				case 'edit':
 					return edit(rest, ctx);
-				case 'set':
-					if (rest.length < 4) throw commandError('usage', `Usage: ${SET_USAGE}`);
-					printStyled(ctx, [set(checkProject(rest[0]), rest[1] as string, rest[2] as string, rest.slice(3).join(' '))]);
+				case 'set': {
+					const t = target(rest, SET_USAGE);
+					if (t.rest.length < 2) throw commandError('usage', `Usage: ${SET_USAGE}`);
+					printStyled(ctx, [set(t.project, t.id, t.rest[0] as string, t.rest.slice(1).join(' '))]);
 					return;
-				case 'unset':
-					exactly(rest, 3, UNSET_USAGE);
-					printStyled(ctx, [unset(checkProject(rest[0]), rest[1] as string, rest[2] as string)]);
+				}
+				case 'unset': {
+					const t = target(rest, UNSET_USAGE);
+					exactly(t.rest, 1, UNSET_USAGE);
+					printStyled(ctx, [unset(t.project, t.id, t.rest[0] as string)]);
 					return;
-				case 'status':
-					if (rest.length < 2 || rest.length > 3) throw commandError('usage', `Usage: ${STATUS_USAGE}`);
-					printStyled(ctx, [status(checkProject(rest[0]), rest[1] as string, rest[2])]);
+				}
+				case 'status': {
+					const t = target(rest, STATUS_USAGE);
+					if (t.rest.length > 1) throw commandError('usage', `Usage: ${STATUS_USAGE}`);
+					printStyled(ctx, [status(t.project, t.id, t.rest[0])]);
 					return;
+				}
 				case 'statuses':
 					exactly(rest, 1, STATUSES_USAGE);
 					printStyled(ctx, [statuses(checkProject(rest[0]))]);
@@ -861,10 +899,12 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					printStyled(ctx, setStatuses(checkProject(rest[0]), rest.slice(1)));
 					return;
 				case 'delete':
-				case 'rm':
-					exactly(rest, 2, DELETE_USAGE);
-					printStyled(ctx, [remove(checkProject(rest[0]), rest[1] as string)]);
+				case 'rm': {
+					const t = target(rest, DELETE_USAGE);
+					exactly(t.rest, 0, DELETE_USAGE);
+					printStyled(ctx, [remove(t.project, t.id)]);
 					return;
+				}
 				case 'search':
 					printStyled(ctx, search(rest));
 					return;

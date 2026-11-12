@@ -41,6 +41,8 @@ export function checkId(v: string): string {
 	return v;
 }
 
+export const looksLikeId = (v: string): boolean => ID_RE.test(v) && v.includes('-') && /\d/.test(v);
+
 export const tasksDir = (md: string, project: string): string => path.join(md, project, TASKS_DIR);
 
 export function parseFileName(file: string): {id: string; name: string} | undefined {
