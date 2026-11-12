@@ -1,7 +1,7 @@
 import {lstatSync, mkdirSync, rmSync} from 'node:fs';
 import path from 'node:path';
 import type {Command, CommandContext, Logger, SpanTone, StyledBlock, Subcommand} from '../../../src/api.js';
-import {decorLine, line, printStyled, rule, span, table, textBlock} from './kit.js';
+import {commandError, decorLine, line, printStyled, rule, span, table, textBlock} from './kit.js';
 import {noopLog} from './log.js';
 import {rank} from './search.js';
 import {
@@ -217,13 +217,13 @@ function parseNew(args: string[]): NewSpec {
 		}
 		if (!arg.startsWith('--')) break;
 		const value = args[++i];
-		if (value === undefined) throw new Error(`${arg} needs a value. Usage: ${NEW_USAGE}`);
+		if (value === undefined) throw commandError('usage', `${arg} needs a value. Usage: ${NEW_USAGE}`);
 		if (arg === '--name') spec.name = checkTitle(value);
 		else if (arg === '--id') spec.id = checkId(value);
 		else if (arg === '--status') spec.status = checkStatus(value);
 		else if (arg === '--type') spec.type = checkType(value);
 		else if (arg === '--parent') spec.parent = checkId(value);
-		else throw new Error(`Unknown option ${arg.slice(0, 32)}. Usage: ${NEW_USAGE}`);
+		else throw commandError('usage', `Unknown option ${arg.slice(0, 32)}. Usage: ${NEW_USAGE}`);
 	}
 	const words = args.slice(i).join(' ').trim();
 	if (words !== '') spec.description = words;
@@ -234,8 +234,8 @@ const sameKey = (a: string, b: string): boolean => a.toLowerCase() === b.toLower
 
 function checkExtraKey(key: string, taken: string[]): string {
 	checkFieldKey(key);
-	if (!isExtraKey(key)) throw new Error(`${key} is a built-in field`);
-	if (taken.some(t => sameKey(t, key))) throw new Error(`${key} is already there`);
+	if (!isExtraKey(key)) throw commandError('invalid', `${key} is a built-in field`);
+	if (taken.some(t => sameKey(t, key))) throw commandError('invalid', `${key} is already there`);
 	return key;
 }
 
@@ -313,7 +313,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const list = (args: string[]): StyledBlock[] => {
 		const all = args.includes('--all');
 		const rest = args.filter(a => a !== '--all');
-		if (rest.length !== 1 || rest[0]!.startsWith('--')) throw new Error(`Usage: ${LIST_USAGE}`);
+		if (rest.length !== 1 || rest[0]!.startsWith('--')) throw commandError('usage', `Usage: ${LIST_USAGE}`);
 		const project = checkProject(rest[0]!);
 		const where = tasksDir(deps.md, project);
 		const found = listTasks(deps.md, project).map(t => ({task: t, ...info(t)}));
@@ -337,15 +337,15 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			const why = process.env.CLAUDECODE
 				? ' (a yena run from the chat\'s Bash cannot see the work session, the sandbox hides it: use the console tools, and restart yena to load new module code)'
 				: '';
-			throw new Error(`${project} is not isolated; run "project isolate ${project}" first${why}`);
+			throw commandError('not-isolated', `${project} is not isolated; run "project isolate ${project}" first${why}`);
 		}
 	};
 
 	const findTask = (project: string, rawId: string | undefined): Task => {
 		const id = checkId(rawId ?? '');
 		const task = listTasks(deps.md, project).find(t => t.id.toLowerCase() === id.toLowerCase());
-		if (!task && !hasProject(deps.md, project)) throw new Error(`There is no project ${project}; "project list" shows them`);
-		if (!task) throw new Error(`${project} has no task ${id}; "task list ${project}" lists them`);
+		if (!task && !hasProject(deps.md, project)) throw commandError('not-found', `There is no project ${project}; "project list" shows them`);
+		if (!task) throw commandError('not-found', `${project} has no task ${id}; "task list ${project}" lists them`);
 		return task;
 	};
 
@@ -372,22 +372,22 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const resolveParent = (project: string, raw: string): Task => {
 		const id = checkId(raw.trim());
 		const epic = listTasks(deps.md, project).find(t => sameKey(t.id, id));
-		if (!epic) throw new Error(`${project} has no task ${id} to be the parent; "task list ${project}" lists them`);
+		if (!epic) throw commandError('not-found', `${project} has no task ${id} to be the parent; "task list ${project}" lists them`);
 		const text = readTask(epic.file);
-		if (text === undefined || !isEpicText(text)) throw new Error(`${label(epic)} is not an epic (make it one with "task set ${project} ${epic.id} type epic")`);
+		if (text === undefined || !isEpicText(text)) throw commandError('invalid', `${label(epic)} is not an epic (make it one with "task set ${project} ${epic.id} type epic")`);
 		return epic;
 	};
 
 	const hasTasksError = (epic: Task, kids: Entry[]): Error =>
-		new Error(`${label(epic)} has tasks: ${kids.map(k => label(k.task)).join(', ')}; unset their parent first ("task unset ${epic.project} <id> parent")`);
+		commandError('invalid', `${label(epic)} has tasks: ${kids.map(k => label(k.task)).join(', ')}; unset their parent first ("task unset ${epic.project} <id> parent")`);
 
 	const hasParentError = (task: Task, parent: string): Error =>
-		new Error(`${label(task)} has parent ${parent}; unset it first ("task unset ${task.project} ${task.id} parent")`);
+		commandError('invalid', `${label(task)} has parent ${parent}; unset it first ("task unset ${task.project} ${task.id} parent")`);
 
 	const checkRelation = (task: Task | undefined, project: string, type: string, parent: string | undefined): string | undefined => {
-		if (type === 'epic' && parent !== undefined) throw new Error(`${task ? label(task) : 'An epic'} is an epic; an epic has no parent`);
+		if (type === 'epic' && parent !== undefined) throw commandError('invalid', `${task ? label(task) : 'An epic'} is an epic; an epic has no parent`);
 		const resolved = parent === undefined ? undefined : resolveParent(project, parent);
-		if (task && resolved && sameKey(resolved.id, task.id)) throw new Error(`${label(task)} cannot be its own parent`);
+		if (task && resolved && sameKey(resolved.id, task.id)) throw commandError('invalid', `${label(task)} cannot be its own parent`);
 		if (task && type !== 'epic' && isEpicText(textOf(task))) {
 			const kids = childrenOf(project, task.id);
 			if (kids.length > 0) throw hasTasksError(task, kids);
@@ -400,7 +400,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const checkAllowed = (project: string, raw: string | undefined, current?: string): string => {
 		const value = checkStatus(raw);
 		if (value === current || isAllowedStatus(readStatuses(deps.md, project), value)) return value;
-		throw new Error(`${value} is not a status of ${project}; use one of: ${allowedText(project)} ("${STATUSES_USAGE}")`);
+		throw commandError('invalid', `${value} is not a status of ${project}; use one of: ${allowedText(project)} ("${STATUSES_USAGE}")`);
 	};
 
 	const offListNote = (project: string, status: string | undefined): string | undefined =>
@@ -434,7 +434,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		const existing = listTasks(deps.md, p.project);
 		const id = p.id === undefined ? nextAutoId(existing) : checkId(p.id);
 		const clash = existing.find(t => t.id.toLowerCase() === id.toLowerCase());
-		if (clash) throw new Error(`${p.project} already has task ${id}: ${clash.file}`);
+		if (clash) throw commandError('invalid', `${p.project} already has task ${id}: ${clash.file}`);
 		const type = p.type === undefined ? 'task' : checkType(p.type);
 		const parent = checkRelation(undefined, p.project, type, p.parent);
 		const description = checkDescription(p.description);
@@ -579,10 +579,10 @@ export function createTaskCommand(deps: TaskDeps): Command {
 
 	const unset = (project: string, rawId: string, rawKey: string): StyledBlock => {
 		const task = findTask(project, rawId);
-		if ([...REQUIRED_FIELDS, 'description'].some(k => sameKey(k, rawKey))) throw new Error(`Every task needs ${rawKey.toLowerCase()}; change it with "${SET_USAGE}"`);
+		if ([...REQUIRED_FIELDS, 'description'].some(k => sameKey(k, rawKey))) throw commandError('invalid', `Every task needs ${rawKey.toLowerCase()}; change it with "${SET_USAGE}"`);
 		if (sameKey(rawKey, 'type')) {
 			requireIsolated(project);
-			if (fieldOf(textOf(task), 'type') === undefined) throw new Error(`${label(task)} has no field type`);
+			if (fieldOf(textOf(task), 'type') === undefined) throw commandError('not-found', `${label(task)} has no field type`);
 			checkRelation(task, project, 'task', undefined);
 			rewriteTask(task.file, text => withoutField(text, 'type'));
 			log.info('task field removed');
@@ -590,7 +590,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 		}
 		const key = sameKey(rawKey, 'parent') ? 'parent' : checkFieldKey(rawKey);
 		requireIsolated(project);
-		if (fieldOf(textOf(task), key) === undefined) throw new Error(`${label(task)} has no field ${key}`);
+		if (fieldOf(textOf(task), key) === undefined) throw commandError('not-found', `${label(task)} has no field ${key}`);
 		rewriteTask(task.file, text => withoutField(text, key));
 		log.info('task field removed');
 		return labelled(task, `: removed ${key}`);
@@ -666,12 +666,12 @@ export function createTaskCommand(deps: TaskDeps): Command {
 			else if (arg === '--status') wanted = checkStatus(args[++i]);
 			else if (arg === '--limit') {
 				const n = Number(args[++i]);
-				if (!Number.isInteger(n) || n < 1 || n > SEARCH_LIMIT_MAX) throw new Error(`--limit is a number from 1 to ${SEARCH_LIMIT_MAX}`);
+				if (!Number.isInteger(n) || n < 1 || n > SEARCH_LIMIT_MAX) throw commandError('invalid', `--limit is a number from 1 to ${SEARCH_LIMIT_MAX}`);
 				limit = n;
-			} else if (arg.startsWith('--')) throw new Error(`Unknown option ${arg.slice(0, 32)}. Usage: ${SEARCH_USAGE}`);
+			} else if (arg.startsWith('--')) throw commandError('usage', `Unknown option ${arg.slice(0, 32)}. Usage: ${SEARCH_USAGE}`);
 			else rest.push(arg);
 		}
-		if (rest.length === 0) throw new Error(`Usage: ${SEARCH_USAGE}`);
+		if (rest.length === 0) throw commandError('usage', `Usage: ${SEARCH_USAGE}`);
 		const query = rest.map(w => (/\s/u.test(w) ? `"${w.replace(/"/g, '')}"` : w)).join(' ');
 		const texts = listTasks(deps.md)
 			.slice(0, SEARCH_FILES_MAX)
@@ -783,15 +783,15 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	const newTask = async (args: string[], ctx: CommandContext): Promise<void> => {
 		const spec = parseNew(args);
 		if (spec.description !== undefined) {
-			if (spec.project === undefined) throw new Error(`Usage: ${NEW_USAGE}`);
+			if (spec.project === undefined) throw commandError('usage', `Usage: ${NEW_USAGE}`);
 			printStyled(ctx, [line(span('Created ', {decor: true, tone: 'ok'}), create({...spec, project: spec.project, description: spec.description}).file)]);
 			return;
 		}
-		if (!canShowForm(ctx)) throw new Error(`A task needs a description. Usage: ${NEW_USAGE} (without a description it opens a form, in the app only)`);
+		if (!canShowForm(ctx)) throw commandError('usage', `A task needs a description. Usage: ${NEW_USAGE} (without a description it opens a form, in the app only)`);
 		let project = spec.project;
 		if (project === undefined) {
 			const isolated = deps.isolated();
-			if (isolated.length === 0) throw new Error('No project is isolated; run "project isolate <name>" first');
+			if (isolated.length === 0) throw commandError('not-isolated', 'No project is isolated; run "project isolate <name>" first');
 			if (isolated.length === 1) project = isolated[0];
 			else {
 				const ui = await import('./ui/task-form.js');
@@ -803,15 +803,15 @@ export function createTaskCommand(deps: TaskDeps): Command {
 	};
 
 	const edit = async (args: string[], ctx: CommandContext): Promise<void> => {
-		if (args.length !== 2) throw new Error(`Usage: ${EDIT_USAGE}`);
+		if (args.length !== 2) throw commandError('usage', `Usage: ${EDIT_USAGE}`);
 		const project = checkProject(args[0]);
 		const task = findTask(project, args[1]);
-		if (!canShowForm(ctx)) throw new Error(`"task edit" opens a form in the app; change fields with "${SET_USAGE}" and "${UNSET_USAGE}"`);
+		if (!canShowForm(ctx)) throw commandError('usage', `"task edit" opens a form in the app; change fields with "${SET_USAGE}" and "${UNSET_USAGE}"`);
 		await openForm(ctx, project, task, {});
 	};
 
 	const exactly = (rest: string[], n: number, usage: string) => {
-		if (rest.length !== n) throw new Error(`Usage: ${usage}`);
+		if (rest.length !== n) throw commandError('usage', `Usage: ${usage}`);
 	};
 
 	return {
@@ -841,7 +841,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 				case 'edit':
 					return edit(rest, ctx);
 				case 'set':
-					if (rest.length < 4) throw new Error(`Usage: ${SET_USAGE}`);
+					if (rest.length < 4) throw commandError('usage', `Usage: ${SET_USAGE}`);
 					printStyled(ctx, [set(checkProject(rest[0]), rest[1] as string, rest[2] as string, rest.slice(3).join(' '))]);
 					return;
 				case 'unset':
@@ -849,7 +849,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					printStyled(ctx, [unset(checkProject(rest[0]), rest[1] as string, rest[2] as string)]);
 					return;
 				case 'status':
-					if (rest.length < 2 || rest.length > 3) throw new Error(`Usage: ${STATUS_USAGE}`);
+					if (rest.length < 2 || rest.length > 3) throw commandError('usage', `Usage: ${STATUS_USAGE}`);
 					printStyled(ctx, [status(checkProject(rest[0]), rest[1] as string, rest[2])]);
 					return;
 				case 'statuses':
@@ -857,7 +857,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					printStyled(ctx, [statuses(checkProject(rest[0]))]);
 					return;
 				case 'set-statuses':
-					if (rest.length < 2) throw new Error(`Usage: ${SET_STATUSES_USAGE}`);
+					if (rest.length < 2) throw commandError('usage', `Usage: ${SET_STATUSES_USAGE}`);
 					printStyled(ctx, setStatuses(checkProject(rest[0]), rest.slice(1)));
 					return;
 				case 'delete':
@@ -869,7 +869,7 @@ export function createTaskCommand(deps: TaskDeps): Command {
 					printStyled(ctx, search(rest));
 					return;
 				default:
-					throw new Error(`Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${LINE}`);
+					throw commandError('usage', `Unknown subcommand: ${sub.slice(0, 64)}. Usage: ${LINE}`);
 			}
 		},
 	};

@@ -1,6 +1,7 @@
 import {closeSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync, constants} from 'node:fs';
 import path from 'node:path';
 import {isProjectName} from './deps/project.js';
+import {commandError} from './kit.js';
 import {bodyOf, type Field, fieldOf, fieldsOf, render, withBody, withField, withoutField} from './frontmatter.js';
 
 export {type Field, fieldOf, fieldsOf, withField, withoutField} from './frontmatter.js';
@@ -25,18 +26,18 @@ export type Task = {project: string; id: string; name: string; file: string};
 export const isProject = isProjectName;
 
 export function checkProject(v: string | undefined): string {
-	if (!isProject(v)) throw new Error('Invalid project name');
+	if (!isProject(v)) throw commandError('invalid', 'Invalid project name');
 	return v;
 }
 
 export function checkTitle(v: string | undefined): string {
 	const title = checkFieldValue(v, 'The task name');
-	if (title.length > NAME_MAX) throw new Error(`The task name is longer than ${NAME_MAX} characters`);
+	if (title.length > NAME_MAX) throw commandError('invalid', `The task name is longer than ${NAME_MAX} characters`);
 	return title;
 }
 
 export function checkId(v: string): string {
-	if (!ID_RE.test(v)) throw new Error('The task number may hold letters, digits and "-" (e.g. TECH-12345)');
+	if (!ID_RE.test(v)) throw commandError('invalid', 'The task number may hold letters, digits and "-" (e.g. TECH-12345)');
 	return v;
 }
 
@@ -106,7 +107,7 @@ export function createTaskFile(file: string, text: string): void {
 	try {
 		writeFileSync(file, text, {flag: 'wx', mode: 0o644});
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${file} already exists`);
+		if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw commandError('invalid', `${file} already exists`);
 		throw new Error(`Cannot create ${file}: ${(error as NodeJS.ErrnoException).code ?? 'write failed'}`);
 	}
 }
@@ -129,7 +130,7 @@ export function readTask(file: string): string | undefined {
 
 export function checkStatus(v: string | undefined): string {
 	if (v === undefined || v.length > STATUS_MAX || !STATUS_RE.test(v)) {
-		throw new Error(`The status is one kebab-case word, e.g. ${[...DEFAULT_STATUSES, ARCHIVED_STATUS].join(', ')}`);
+		throw commandError('invalid', `The status is one kebab-case word, e.g. ${[...DEFAULT_STATUSES, ARCHIVED_STATUS].join(', ')}`);
 	}
 	return v;
 }
@@ -145,9 +146,9 @@ export const firstStatus = (s: Statuses): string => s.list.find(x => x !== ARCHI
 export function checkStatuses(values: string[]): string[] {
 	const list = values.map(v => checkStatus(v));
 	const repeated = list.find((v, i) => list.indexOf(v) !== i);
-	if (repeated !== undefined) throw new Error(`${repeated} is in the list twice`);
-	if (list.length > STATUSES_MAX) throw new Error(`A project has at most ${STATUSES_MAX} statuses`);
-	if (!list.some(v => v !== ARCHIVED_STATUS)) throw new Error(`The list needs a status besides ${ARCHIVED_STATUS}`);
+	if (repeated !== undefined) throw commandError('invalid', `${repeated} is in the list twice`);
+	if (list.length > STATUSES_MAX) throw commandError('invalid', `A project has at most ${STATUSES_MAX} statuses`);
+	if (!list.some(v => v !== ARCHIVED_STATUS)) throw commandError('invalid', `The list needs a status besides ${ARCHIVED_STATUS}`);
 	return list;
 }
 
@@ -250,7 +251,7 @@ export const TASK_TYPES = ['task', 'epic'];
 
 export function checkType(v: string | undefined): string {
 	const type = (v ?? '').trim().toLowerCase();
-	if (!TASK_TYPES.includes(type)) throw new Error('The type is task or epic');
+	if (!TASK_TYPES.includes(type)) throw commandError('invalid', 'The type is task or epic');
 	return type;
 }
 
@@ -268,17 +269,17 @@ export const formFields = (text: string): Field[] =>
 export const isOneLine = (text: string): boolean => text !== '' && !CONTROL.test(text) && text.length <= DESCRIPTION_MAX;
 
 export function checkFieldKey(v: string | undefined): string {
-	if (v === undefined || !FIELD_KEY_RE.test(v)) throw new Error('A field name starts with a letter and holds letters, digits and "-", up to 32 characters (e.g. Priority)');
-	if (isIn(v, FIXED_FIELDS)) throw new Error(`${v} is set when the task is created and cannot be changed`);
-	if (isIn(v, NAME_FIELDS)) throw new Error(`${v} is part of the file name and cannot be changed`);
+	if (v === undefined || !FIELD_KEY_RE.test(v)) throw commandError('invalid', 'A field name starts with a letter and holds letters, digits and "-", up to 32 characters (e.g. Priority)');
+	if (isIn(v, FIXED_FIELDS)) throw commandError('invalid', `${v} is set when the task is created and cannot be changed`);
+	if (isIn(v, NAME_FIELDS)) throw commandError('invalid', `${v} is part of the file name and cannot be changed`);
 	return v;
 }
 
 export function checkFieldValue(v: string | undefined, what = 'The value', max = VALUE_MAX): string {
 	const value = (v ?? '').trim();
-	if (value === '') throw new Error(`${what} must not be empty`);
-	if (CONTROL.test(value)) throw new Error(`${what} must be one line without control characters`);
-	if (value.length > max) throw new Error(`${what} is longer than ${max} characters`);
+	if (value === '') throw commandError('invalid', `${what} must not be empty`);
+	if (CONTROL.test(value)) throw commandError('invalid', `${what} must be one line without control characters`);
+	if (value.length > max) throw commandError('invalid', `${what} is longer than ${max} characters`);
 	return value;
 }
 

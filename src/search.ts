@@ -1,4 +1,5 @@
 import {bodyOf, bodyStart, fieldOf} from './frontmatter.js';
+import {commandError} from './kit.js';
 import type {Task} from './tasks.js';
 
 export type Line = {line: number; text: string};
@@ -61,7 +62,7 @@ export function distance(a: string, b: string, k: number): number {
 
 export function parseQuery(raw: string): Unit[] {
 	const parts = raw.split('"');
-	if (parts.length % 2 === 0) throw new Error('A phrase has no closing quote, e.g. "login page"');
+	if (parts.length % 2 === 0) throw commandError('invalid', 'A phrase has no closing quote, e.g. "login page"');
 	const units: Unit[] = [];
 	const seen = new Set<string>();
 	const add = (key: string, unit: Unit): void => {
@@ -86,7 +87,7 @@ export function parseQuery(raw: string): Unit[] {
 			for (const word of words(token)) add(word, {kind: 'word', word});
 		}
 	});
-	if (units.length === 0) throw new Error('Give words to search for');
+	if (units.length === 0) throw commandError('usage', 'Give words to search for');
 	return units;
 }
 

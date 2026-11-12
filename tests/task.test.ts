@@ -20,6 +20,7 @@ const isolate = (...names: string[]) => void (isolatedNow = names);
 
 const noopLog: Logger = {error() {}, warn() {}, info() {}, debug() {}, child: () => noopLog, addRedactor() {}};
 const command = createTaskCommand({md, isolated: () => isolatedNow, log: noopLog, now: () => new Date('2026-10-23T12:00:00Z')});
+const failure = (kind: string, pattern: RegExp) => (error: Error & {kind?: string}) => error.kind === kind && pattern.test(error.message);
 const run = async (...args: string[]): Promise<string> => {
 	const printed: string[] = [];
 	const ctx: CommandContext = {print: t => void printed.push(t), clear() {}, exit() {}};
@@ -197,15 +198,15 @@ describe('task command', () => {
 	});
 
 	it('refuses a taken number, a missing description and bad input', async () => {
-		await assert.rejects(run('new', 'web', '--id', 'tech-12345', 'other'), /already has task tech-12345/);
-		await assert.rejects(run('new', 'web', '--name'), /--name needs a value/);
-		await assert.rejects(run('new', 'web', '--id', 'A_B', 'x'), /task number/);
-		await assert.rejects(run('new', 'web', '--status', 'Done!', 'x'), /one kebab-case word/);
-		await assert.rejects(run('new', 'web', '--color', 'red', 'x'), /Unknown option --color/);
-		await assert.rejects(run('new', 'web', '--id'), /--id needs a value/);
-		await assert.rejects(run('new', '../web', 'x'), /Invalid project name/);
-		await assert.rejects(run('new', 'web'), /A task needs a description/, 'no form without the app');
-		await assert.rejects(run('new', '--id', 'X-1', 'words'), /Usage: task new/);
+		await assert.rejects(run('new', 'web', '--id', 'tech-12345', 'other'), failure('invalid', /already has task tech-12345/));
+		await assert.rejects(run('new', 'web', '--name'), failure('usage', /--name needs a value/));
+		await assert.rejects(run('new', 'web', '--id', 'A_B', 'x'), failure('invalid', /task number/));
+		await assert.rejects(run('new', 'web', '--status', 'Done!', 'x'), failure('invalid', /one kebab-case word/));
+		await assert.rejects(run('new', 'web', '--color', 'red', 'x'), failure('usage', /Unknown option --color/));
+		await assert.rejects(run('new', 'web', '--id'), failure('usage', /--id needs a value/));
+		await assert.rejects(run('new', '../web', 'x'), failure('invalid', /Invalid project name/));
+		await assert.rejects(run('new', 'web'), failure('usage', /A task needs a description/), 'no form without the app');
+		await assert.rejects(run('new', '--id', 'X-1', 'words'), failure('usage', /Usage: task new/));
 	});
 
 	it('lists the tasks of one project: bare id, status and name; the project is required', async () => {
@@ -216,9 +217,9 @@ describe('task command', () => {
 		assert.doesNotMatch(one, /web|\.md|OAuth/);
 		assert.match(await run('list', 'web'), /^TASK-1 +todo +\S/m);
 		assert.match(await run('list', 'none'), /No tasks in/);
-		await assert.rejects(run('list'), /Usage: task list <project> \[--all\]/);
-		await assert.rejects(run('list', '--all'), /Usage: task list <project>/);
-		await assert.rejects(run('list', 'api', 'web'), /Usage: task list <project>/);
+		await assert.rejects(run('list'), failure('usage', /Usage: task list <project> \[--all\]/));
+		await assert.rejects(run('list', '--all'), failure('usage', /Usage: task list <project>/));
+		await assert.rejects(run('list', 'api', 'web'), failure('usage', /Usage: task list <project>/));
 	});
 
 	it('searches every project, skipping symlinked files', async () => {
@@ -249,13 +250,13 @@ describe('task command', () => {
 		assert.equal(text.match(/^status:/gm)?.length, 1, 'one status line');
 		assert.match(await run('list', 'web'), /^TASK-2 +in-progress +\S/m);
 		isolate();
-		await assert.rejects(run('status', 'web', 'TASK-2', 'done'), /web is not isolated/);
+		await assert.rejects(run('status', 'web', 'TASK-2', 'done'), failure('not-isolated', /web is not isolated/));
 		assert.equal(await run('status', 'web', 'TASK-2'), 'web/TASK-2: in-progress', 'reading works without isolation');
 		isolate('web');
-		await assert.rejects(run('status', 'web', 'TASK-404'), /web has no task TASK-404/);
-		await assert.rejects(run('status', 'heha', 'TASK-2'), /There is no project heha; "project list" shows them/);
-		await assert.rejects(run('status', 'web', 'TASK-2', 'Done!'), /one kebab-case word/);
-		await assert.rejects(run('status', 'web'), /Usage: task status/);
+		await assert.rejects(run('status', 'web', 'TASK-404'), failure('not-found', /web has no task TASK-404/));
+		await assert.rejects(run('status', 'heha', 'TASK-2'), failure('not-found', /There is no project heha; "project list" shows them/));
+		await assert.rejects(run('status', 'web', 'TASK-2', 'Done!'), failure('invalid', /one kebab-case word/));
+		await assert.rejects(run('status', 'web'), failure('usage', /Usage: task status/));
 		await assert.rejects(run('status', 'web', 'TASK-9', 'done'), /not a regular file|has no task/);
 	});
 
@@ -312,7 +313,7 @@ describe('task command', () => {
 		let shown = 0;
 		await command.run(['help'], {print() {}, clear() {}, exit() {}, showHelp: () => void shown++});
 		assert.equal(shown, 1);
-		await assert.rejects(run('nope'), /Unknown subcommand: nope/);
+		await assert.rejects(run('nope'), failure('usage', /Unknown subcommand: nope/));
 		assert.equal(depsFor('/data/task').md, '/data/md/projects');
 		assert.deepEqual(depsFor(path.join(tmp, 'nowhere', 'task')).isolated(), [], 'no project state: nothing isolated');
 		const commands = await plugin({dataDir: path.join(tmp, 'task'), log: noopLog, events: {emit() {}, on: () => () => {}}});
