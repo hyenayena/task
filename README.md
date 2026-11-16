@@ -2,6 +2,8 @@
 
 Task files for yena's projects, as a plugin (depends on `project`, whose docs folders in the md hub hold the tasks, and on `core`, whose kit draws the form). Tasks are filled by hand in a form or by commands, so the user and an assistant work with them the same way. Some tasks are routine and come back; before a new task the architect looks for similar past tasks and reuses their approaches and pitfalls. After the work the documentator records the outcome in the task file, which is what the next search finds.
 
+Export (`yena.json` `export.deny`): none; the module keeps no data of its own (task files live in the md hub).
+
 Task files live in each project's docs in the md hub:
 
 ```
